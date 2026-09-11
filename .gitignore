@@ -3,8 +3,9 @@ __pycache__/
 *.py[cod]
 backend/.venv/
 backend/data/*.db
-backend/app/assets/
 backend/.env
 frontend/node_modules/
 frontend/dist/
 npm-debug.log*
+
+*.tsbuildinfo

@@ -123,6 +123,7 @@ def run_seed(force: bool = False) -> int:
             for year in range(2025, 2030):
                 db.add(Demand(region_id=rid, year=year, scenario="base", demand_mw=780 + (year - 2025) * 240,
                               wind_speed_avg=6.6 + (year % 3) * 0.18, policy_support=[0.72, 0.78, 0.88, 0.92, 0.95][year - 2025]))
+        db.flush()
         farms = {x.id: x for x in db.query(WindFarm).all()}
         turbines = db.query(Turbine).all()
         for turbine in turbines:

@@ -17,7 +17,7 @@ REGION_WORDS = {
 STATUS_WORDS = {"在建": "construction", "核准": "approved", "储备": "reserve"}
 
 
-def _status_counts(db: Session, period: str | None = None):
+def _status_counts(db: Session, period: str | None = "2027-Q3"):
     q = db.query(OperationData)
     if period:
         q = q.filter(OperationData.period == period)
@@ -52,7 +52,8 @@ def rule_actions(question: str, db: Session) -> tuple[list[dict], dict, str]:
     focus = None
     for word, rid in REGION_WORDS.items():
         if word in question:
-            filters["regionId"] = rid
+            if rid != "north-china":
+                filters["regionId"] = rid
             focus = rid
             actions.append({"type": "FOCUS_REGION", "payload": {"regionId": rid}})
             break
