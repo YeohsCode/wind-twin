@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import { forestCandidates, TERRAIN_SIZE, terrainHeight, TURBINE_XZ } from './terrain'
+import { activeTerrainProjection, forestCandidates, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
 
 export type SceneTurbine = {
   id: string
@@ -12,6 +12,14 @@ export type SceneTurbine = {
   liveMw: number
   windSpeed: number
   rotorRpm: number
+  x: number
+  z: number
+}
+
+export type TerrainState = {
+  version: number
+  status: 'loading' | 'dem' | 'procedural'
+  sourceText: string
 }
 
 type Props = {
@@ -20,18 +28,21 @@ type Props = {
   onSelect: (id: string) => void
   night: boolean
   viewMode: 'overview' | 'top' | 'side' | 'orbit'
+  terrain: TerrainState
   onNightChange: (night: boolean) => void
   onViewModeChange: (mode: Props['viewMode']) => void
 }
 
-const VIEW_POSITIONS: Record<Props['viewMode'], [number, number, number]> = {
-  overview: [126, 92, 148],
-  top: [0, 185, 2],
-  side: [176, 34, 16],
-  orbit: [104, 60, 112],
-}
-
-export default function SandboxScene({ turbines, selectedId, onSelect, night, viewMode, onNightChange, onViewModeChange }: Props) {
+export default function SandboxScene({
+  turbines,
+  selectedId,
+  onSelect,
+  night,
+  viewMode,
+  terrain,
+  onNightChange,
+  onViewModeChange,
+}: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
   const dataRef = useRef(turbines)
   const turbineMapRef = useRef(new Map<string, THREE.Group>())
@@ -41,8 +52,10 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
   const nightRef = useRef(night)
   const warningLightsRef = useRef<THREE.Mesh[]>([])
   const zoomRef = useRef<((direction: number) => void) | null>(null)
+  const applyViewRef = useRef<(() => void) | null>(null)
   const rebuildRef = useRef<(() => void) | null>(null)
   const viewModeRef = useRef(viewMode)
+  const terrainRef = useRef(terrain)
   const sceneRef = useRef<THREE.Scene | null>(null)
   const ambientRef = useRef<THREE.HemisphereLight | null>(null)
   const sunRef = useRef<THREE.DirectionalLight | null>(null)
@@ -51,19 +64,23 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
   selectedRef.current = selectedId
   nightRef.current = night
   viewModeRef.current = viewMode
+  terrainRef.current = terrain
 
   useEffect(() => {
     const mount = mountRef.current
     if (!mount) return
 
+    const projection = activeTerrainProjection()
+    const size = projection.sideMeters / 30
+    const half = size / 2
+    const elevationRange = terrainElevationRange()
+
     const scene = new THREE.Scene()
     sceneRef.current = scene
     scene.background = new THREE.Color('#04100c')
-    scene.fog = new THREE.Fog('#04100c', 230, 430)
+    scene.fog = new THREE.Fog('#04100c', size * 0.85, size * 2.4)
 
-    const camera = new THREE.PerspectiveCamera(42, mount.clientWidth / mount.clientHeight, 0.1, 900)
-    camera.position.set(...VIEW_POSITIONS.overview)
-
+    const camera = new THREE.PerspectiveCamera(42, mount.clientWidth / mount.clientHeight, 0.1, Math.max(1800, size * 6))
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
     renderer.setSize(mount.clientWidth, mount.clientHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -71,33 +88,34 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     renderer.domElement.classList.add('sandbox-canvas')
     mount.appendChild(renderer.domElement)
 
+    const controls = new OrbitControls(camera, renderer.domElement)
+
     const labelRenderer = new CSS2DRenderer()
     labelRenderer.setSize(mount.clientWidth, mount.clientHeight)
     labelRenderer.domElement.classList.add('sandbox-labels')
     mount.appendChild(labelRenderer.domElement)
 
-    const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
     controls.dampingFactor = 0.07
     controls.maxPolarAngle = Math.PI * 0.485
-    controls.minDistance = 65
-    controls.maxDistance = 360
-    controls.target.set(0, 12, 0)
+    controls.minDistance = Math.max(30, size * 0.12)
+    controls.maxDistance = Math.max(360, size * 2.2)
+    controls.target.set(0, 10, 0)
 
     const ambient = new THREE.HemisphereLight('#d8ffe8', '#173626', night ? 0.42 : 1.08)
     ambientRef.current = ambient
     scene.add(ambient)
     const sun = new THREE.DirectionalLight('#fff6df', night ? 0.22 : 2.0)
-    sun.position.set(88, 126, 68)
     sunRef.current = sun
+    sun.position.set(size * 0.44, size * 0.62, size * 0.34)
     scene.add(sun)
     const rim = new THREE.DirectionalLight('#9ff5c8', night ? 0.28 : 0.72)
-    rim.position.set(-96, 58, -82)
+    rim.position.set(-size * 0.48, size * 0.28, -size * 0.4)
     scene.add(rim)
 
-    // Terrain: quantized elevation colors create the contour/terrace appearance.
-    const segments = 220
-    const terrainGeometry = new THREE.PlaneGeometry(TERRAIN_SIZE, TERRAIN_SIZE, segments, segments)
+    // Quantized DEM elevation colors preserve the sand-table contour style.
+    const segments = Math.min(300, Math.max(180, Math.round(size / 0.75)))
+    const terrainGeometry = new THREE.PlaneGeometry(size, size, segments, segments)
     terrainGeometry.rotateX(-Math.PI / 2)
     const positions = terrainGeometry.attributes.position
     const colors = new Float32Array(positions.count * 3)
@@ -112,35 +130,31 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
       const z = positions.getZ(index)
       const y = terrainHeight(x, z)
       positions.setY(index, y)
-      const band = Math.floor(y / 2.4) / 15
+      const band = (y - elevationRange.min) / (elevationRange.max - elevationRange.min)
       if (band < 0.18) workColor.copy(low).lerp(valley, band / 0.18)
       else if (band < 0.46) workColor.copy(valley).lerp(mid, (band - 0.18) / 0.28)
       else if (band < 0.78) workColor.copy(mid).lerp(high, (band - 0.46) / 0.32)
       else workColor.copy(high).lerp(peak, Math.min(1, (band - 0.78) / 0.22))
-      const grain = 0.90 + ((Math.sin(x * 2.7) + Math.cos(z * 3.1)) * 0.035)
-      workColor.multiplyScalar(grain)
+      workColor.multiplyScalar(0.9 + (Math.sin(x * 2.7) + Math.cos(z * 3.1)) * 0.035)
       colors[index * 3] = workColor.r
       colors[index * 3 + 1] = workColor.g
       colors[index * 3 + 2] = workColor.b
     }
     terrainGeometry.setAttribute('color', new THREE.BufferAttribute(colors, 3))
     terrainGeometry.computeVertexNormals()
-    const terrain = new THREE.Mesh(terrainGeometry, new THREE.MeshStandardMaterial({
+    scene.add(new THREE.Mesh(terrainGeometry, new THREE.MeshStandardMaterial({
       vertexColors: true, roughness: 0.88, metalness: 0.02, flatShading: true,
-    }))
-    scene.add(terrain)
+    })))
 
-    // Bevelled sand-table skirt and plinth.
-    const half = TERRAIN_SIZE / 2
-    const bottomScale = 1.16
-    const bottomHalf = half * bottomScale
-    const bottomY = -16
+    // Bevelled skirt follows the exact rectangular DEM boundary.
+    const bottomScale = 1.13
+    const bottomY = -Math.max(12, elevationRange.max * 0.28)
     const edgePoints: THREE.Vector3[] = []
-    const step = 4
-    for (let x = -half; x <= half; x += step) edgePoints.push(new THREE.Vector3(x, terrainHeight(x, -half), -half))
-    for (let z = -half; z <= half; z += step) edgePoints.push(new THREE.Vector3(half, terrainHeight(half, z), z))
-    for (let x = half; x >= -half; x -= step) edgePoints.push(new THREE.Vector3(x, terrainHeight(x, half), half))
-    for (let z = half; z >= -half; z -= step) edgePoints.push(new THREE.Vector3(-half, terrainHeight(-half, z), z))
+    const edgeStep = Math.max(3, size / 64)
+    for (let x = -half; x <= half; x += edgeStep) edgePoints.push(new THREE.Vector3(x, terrainHeight(x, -half), -half))
+    for (let z = -half; z <= half; z += edgeStep) edgePoints.push(new THREE.Vector3(half, terrainHeight(half, z), z))
+    for (let x = half; x >= -half; x -= edgeStep) edgePoints.push(new THREE.Vector3(x, terrainHeight(x, half), half))
+    for (let z = half; z >= -half; z -= edgeStep) edgePoints.push(new THREE.Vector3(-half, terrainHeight(-half, z), z))
     const skirtGeometry = new THREE.BufferGeometry()
     const skirtVertices: number[] = []
     for (let index = 0; index < edgePoints.length; index += 1) {
@@ -159,22 +173,23 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
       color: '#101d21', roughness: 0.65, metalness: 0.18, side: THREE.DoubleSide,
     })))
     const plinth = new THREE.Mesh(
-      new THREE.BoxGeometry(TERRAIN_SIZE * bottomScale, 3, TERRAIN_SIZE * bottomScale),
+      new THREE.BoxGeometry(size * bottomScale, 3, size * bottomScale),
       new THREE.MeshStandardMaterial({ color: '#0a1418', roughness: 0.55, metalness: 0.22 }),
     )
     plinth.position.y = bottomY - 1.5
     scene.add(plinth)
 
-    // Instanced dark forest cones (no external model / DEM assets).
-    const forest = forestCandidates(850)
+    // Instanced forest stays clear of the real turbine pads.
+    const forest = forestCandidates(Math.round(Math.min(1300, Math.max(650, size * 4))))
     const treeGeometry = new THREE.ConeGeometry(1.05, 1.85, 5)
     treeGeometry.translate(0, 1.3, 0)
     const treeMaterial = new THREE.MeshStandardMaterial({ color: '#122b1c', roughness: 0.82 })
     const trees = new THREE.InstancedMesh(treeGeometry, treeMaterial, forest.length)
     const matrix = new THREE.Matrix4()
     const quaternion = new THREE.Quaternion()
+    const treeScale = Math.max(1, Math.min(2.5, size / 240))
     forest.forEach((point, index) => {
-      const scale = point.scale
+      const scale = point.scale * treeScale
       matrix.compose(
         new THREE.Vector3(point.x, point.y, point.z),
         quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), point.tone * 12),
@@ -185,19 +200,9 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     trees.instanceMatrix.needsUpdate = true
     scene.add(trees)
 
-    // Access road over terrain to the substation pad.
-    const roadPath = [
-      new THREE.Vector3(-half + 4, 0, 56), new THREE.Vector3(-70, 0, 38), new THREE.Vector3(-42, 0, 34),
-      new THREE.Vector3(-8, 0, 28), new THREE.Vector3(24, 0, 40), new THREE.Vector3(48, 0, 54),
-      new THREE.Vector3(64, 0, 60),
-    ].map(point => point.clone().setY(terrainHeight(point.x, point.z) + 0.55))
-    const road = new THREE.Mesh(
-      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(roadPath), 120, 0.65, 5, false),
-      new THREE.MeshStandardMaterial({ color: '#d7d2c2', roughness: 0.7 }),
-    )
-    scene.add(road)
-
-    // Substation and collection-cable hints.
+    // The collection point is placed in the quadrant opposite the wind-farm centroid.
+    const stationX = half * 0.62
+    const stationZ = half * 0.62
     const station = new THREE.Group()
     const stationBase = new THREE.Mesh(new THREE.BoxGeometry(16, 0.7, 12), new THREE.MeshStandardMaterial({ color: '#243138', roughness: 0.75 }))
     const building = new THREE.Mesh(new THREE.BoxGeometry(6, 4, 5), new THREE.MeshStandardMaterial({ color: '#d9dbd5', roughness: 0.55 }))
@@ -205,21 +210,21 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     const gantry = new THREE.Mesh(new THREE.BoxGeometry(1, 9, 1), new THREE.MeshStandardMaterial({ color: '#b9c3c7', roughness: 0.4, metalness: 0.3 }))
     gantry.position.set(4, 4.5, 0)
     station.add(stationBase, building, gantry)
-    station.position.set(66, terrainHeight(66, 60) + 0.5, 60)
+    station.position.set(stationX, terrainHeight(stationX, stationZ) + 0.5, stationZ)
     station.rotation.y = -0.3
     scene.add(station)
 
     const cableMaterial = new THREE.LineBasicMaterial({ color: '#67e8f9', transparent: true, opacity: 0.32 })
-    TURBINE_XZ.forEach(([x, z]) => {
+    dataRef.current.forEach(turbine => {
       const points = [
-        new THREE.Vector3(x, terrainHeight(x, z) + 1, z),
-        new THREE.Vector3((x + 66) / 2, terrainHeight((x + 66) / 2, (z + 60) / 2) + 8, (z + 60) / 2),
+        new THREE.Vector3(turbine.x, terrainHeight(turbine.x, turbine.z) + 1, turbine.z),
+        new THREE.Vector3((turbine.x + stationX) / 2, terrainHeight((turbine.x + stationX) / 2, (turbine.z + stationZ) / 2) + 8, (turbine.z + stationZ) / 2),
         station.position.clone().add(new THREE.Vector3(0, 6, 0)),
       ]
       scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), cableMaterial))
     })
 
-    // Programmatic turbine models.
+    const modelScale = Math.max(0.75, Math.min(1.55, size / 240))
     const towerGeometry = new THREE.CylinderGeometry(0.45, 1.0, 22, 18)
     towerGeometry.translate(0, 11, 0)
     const nacelleGeometry = new THREE.BoxGeometry(4.6, 1.5, 1.55)
@@ -229,17 +234,25 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     const warningGeometry = new THREE.SphereGeometry(0.22, 10, 8)
 
     const buildTurbines = () => {
-      turbineMapRef.current.forEach(group => scene.remove(group))
+      turbineMapRef.current.forEach(group => {
+        scene.remove(group)
+        group.traverse(child => {
+          const mesh = child as THREE.Mesh
+          if (mesh.isMesh) (mesh.material as THREE.MeshStandardMaterial)?.dispose()
+        })
+      })
       turbineMapRef.current.clear()
       bladeMapRef.current.clear()
       labelMapRef.current.clear()
       warningLightsRef.current = []
 
       dataRef.current.forEach((turbine, index) => {
-        const [x, z] = TURBINE_XZ[index] ?? [0, 0]
+        const x = turbine.x
+        const z = turbine.z
         const ground = terrainHeight(x, z)
         const group = new THREE.Group()
         group.position.set(x, ground, z)
+        group.scale.setScalar(modelScale)
         group.rotation.y = 0.65 + index * 0.18
         group.userData = { turbineId: turbine.id, clickable: true }
 
@@ -290,6 +303,57 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     buildTurbines()
     rebuildRef.current = buildTurbines
 
+    const fitCamera = () => {
+      const points: ScenePoint[] = dataRef.current.length
+        ? dataRef.current
+        : [{ x: -half * 0.5, z: -half * 0.5 }, { x: half * 0.5, z: half * 0.5 }]
+      const minX = Math.min(...points.map(point => point.x))
+      const maxX = Math.max(...points.map(point => point.x))
+      const minZ = Math.min(...points.map(point => point.z))
+      const maxZ = Math.max(...points.map(point => point.z))
+      const centerX = (minX + maxX) / 2
+      const centerZ = (minZ + maxZ) / 2
+      const targetY = terrainHeight(centerX, centerZ) + (elevationRange.max - elevationRange.min) * 0.25
+      const radius = Math.max(60, Math.hypot(maxX - minX, maxZ - minZ) / 2, size * 0.13)
+      const verticalFov = (camera.fov * Math.PI) / 180
+      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect)
+      const distance = (radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * 1.08
+      const direction = new THREE.Vector3(0.78, 0.60, 0.90).normalize()
+      const center = new THREE.Vector3(centerX, targetY, centerZ)
+      controls.target.copy(center)
+      camera.position.copy(center).addScaledVector(direction, distance)
+      camera.updateProjectionMatrix()
+      controls.update()
+    }
+    fitCamera()
+    applyViewRef.current = fitCamera
+
+    const applyView = () => {
+      const points = dataRef.current
+      const xs = points.map(point => point.x)
+      const zs = points.map(point => point.z)
+      const centerX = points.length ? (Math.min(...xs) + Math.max(...xs)) / 2 : 0
+      const centerZ = points.length ? (Math.min(...zs) + Math.max(...zs)) / 2 : 0
+      const targetY = terrainHeight(centerX, centerZ) + 12 * modelScale
+      const radius = Math.max(60, points.length ? Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...zs) - Math.min(...zs)) / 2 : half * 0.5)
+      const verticalFov = (camera.fov * Math.PI) / 180
+      const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect)
+      const distance = (radius / Math.sin(Math.min(verticalFov, horizontalFov) / 2)) * 1.08
+      controls.target.set(centerX, targetY, centerZ)
+      if (viewModeRef.current === 'overview') {
+        camera.position.set(centerX + distance * 0.55, targetY + distance * 0.48, centerZ + distance * 0.64)
+      } else if (viewModeRef.current === 'top') {
+        camera.position.set(centerX, targetY + distance, centerZ + 0.5)
+      } else if (viewModeRef.current === 'side') {
+        camera.position.set(centerX + distance * 0.92, targetY + distance * 0.18, centerZ)
+      } else {
+        camera.position.set(centerX + distance * 0.48, targetY + distance * 0.38, centerZ + distance * 0.54)
+      }
+      controls.update()
+    }
+    applyViewRef.current = applyView
+    applyView()
+
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
     let downPosition = { x: 0, y: 0 }
@@ -308,12 +372,6 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     }
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
     renderer.domElement.addEventListener('pointerup', onPointerUp)
-    const onViewEvent = (event: Event) => {
-      const detail = (event as CustomEvent<number[]>).detail
-      if (detail) camera.position.set(detail[0], detail[1], detail[2])
-      controls.target.set(0, 12, 0)
-    }
-    renderer.domElement.addEventListener('sandbox-view', onViewEvent)
 
     const resize = () => {
       if (!mount.clientWidth || !mount.clientHeight) return
@@ -327,7 +385,7 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
 
     let frame = 0
     let last = performance.now()
-    let orbitAngle = Math.atan2(camera.position.x, camera.position.z)
+    let orbitAngle = Math.atan2(camera.position.x - controls.target.x, camera.position.z - controls.target.z)
     const tick = () => {
       frame = requestAnimationFrame(tick)
       const now = performance.now()
@@ -357,10 +415,13 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
       })
 
       if (viewModeRef.current === 'orbit') {
+        const orbitDistance = camera.position.distanceTo(controls.target)
         orbitAngle += delta * 0.12
-        const radius = 136
-        camera.position.set(Math.sin(orbitAngle) * radius, 72, Math.cos(orbitAngle) * radius)
-        controls.target.set(0, 12, 0)
+        camera.position.set(
+          controls.target.x + Math.sin(orbitAngle) * orbitDistance,
+          controls.target.y + orbitDistance * 0.35,
+          controls.target.z + Math.cos(orbitAngle) * orbitDistance,
+        )
       }
       renderer.render(scene, camera)
       labelRenderer.render(scene, camera)
@@ -376,13 +437,14 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     return () => {
       cancelAnimationFrame(frame)
       resizeObserver.disconnect()
-      renderer.domElement.removeEventListener('sandbox-view', onViewEvent)
       renderer.domElement.removeEventListener('pointerdown', onPointerDown)
       renderer.domElement.removeEventListener('pointerup', onPointerUp)
       controls.dispose()
       terrainGeometry.dispose()
       treeGeometry.dispose()
+      treeMaterial.dispose()
       skirtGeometry.dispose()
+      cableMaterial.dispose()
       bladeGeometry.dispose()
       towerGeometry.dispose()
       nacelleGeometry.dispose()
@@ -392,14 +454,18 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
       mount.removeChild(renderer.domElement)
       mount.removeChild(labelRenderer.domElement)
     }
-    // Scene is initialized once; live state is read through refs.
+    // A terrain version change deliberately rebuilds the WebGL scene around the new DEM extent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [terrain.version])
 
-  const turbineSignature = turbines.map(turbine => `${turbine.id}:${turbine.status}`).join('|')
+  const turbineSignature = turbines.map(turbine => `${turbine.id}:${turbine.status}:${turbine.x.toFixed(2)}:${turbine.z.toFixed(2)}`).join('|')
   useEffect(() => {
     rebuildRef.current?.()
   }, [turbineSignature])
+
+  useEffect(() => {
+    applyViewRef.current?.()
+  }, [viewMode])
 
   useEffect(() => {
     const scene = sceneRef.current
@@ -412,18 +478,6 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
     sun.intensity = night ? 0.12 : 2.0
   }, [night])
 
-  // Smooth camera presets without rebuilding WebGL resources.
-  useEffect(() => {
-    const target = new THREE.Vector3(...VIEW_POSITIONS[viewMode])
-    const scene = mountRef.current
-    if (!scene) return
-    const canvas = scene.querySelector<HTMLCanvasElement>('.sandbox-canvas')
-    if (!canvas) return
-    const event = new CustomEvent('sandbox-view', { detail: target.toArray() })
-    canvas.dispatchEvent(event)
-  }, [viewMode])
-
-  // Update selected-material and tag colors in place.
   useEffect(() => {
     turbineMapRef.current.forEach((group, id) => {
       const selected = id === selectedId
@@ -444,10 +498,16 @@ export default function SandboxScene({ turbines, selectedId, onSelect, night, vi
       <div ref={mountRef} className="sandbox-mount" />
       <div className="sandbox-brand">
         <strong>TERRAIN DIGITAL TWIN</strong>
-        <span>SECTION A · 12 TURBINES · 18 MW</span>
+        <span>{terrain.sourceText}</span>
       </div>
+      {terrain.status === 'loading' && (
+        <div className="terrain-loading" role="status">
+          <i />
+          正在加载高程数据…
+        </div>
+      )}
       <div className="sandbox-compass">N</div>
-      <div className="sandbox-scale"><i /><span>50 m</span></div>
+      <div className="sandbox-scale"><i /><span>1 unit ≈ 30 m</span></div>
       <div className="sandbox-tools">
         <div className="tool-group">
           {(['overview', 'top', 'orbit', 'side'] as const).map(mode => (

@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import SandboxScene, { type SceneTurbine } from '../sandbox/SandboxScene'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import SandboxScene, { type SceneTurbine, type TerrainState } from '../sandbox/SandboxScene'
 import Chart from '../components/Chart'
 import { api } from '../api'
-import type { Alert, Turbine } from '../types'
+import { loadDemCached } from '../sandbox/dem'
+import { createSceneProjection, projectToScene, setTerrainScene } from '../sandbox/terrain'
+import type { Alert, Turbine, WindFarm } from '../types'
 
 type ViewMode = 'overview' | 'top' | 'side' | 'orbit'
+type BaseTurbine = Turbine & { x: number; z: number }
+type FarmOption = Pick<WindFarm, 'id' | 'name' | 'turbineCount'> & { lat: number; lng: number }
 
 function phase(id: string) {
   let value = 0
@@ -12,7 +16,12 @@ function phase(id: string) {
   return value / 997
 }
 
-function liveTurbine(turbine: Turbine, index: number, seconds: number): SceneTurbine {
+function projectTurbines(turbines: Turbine[]): BaseTurbine[] {
+  const projection = createSceneProjection(turbines)
+  return turbines.map(turbine => ({ ...turbine, ...projectToScene(turbine.lat, turbine.lng, projection) }))
+}
+
+function liveTurbine(turbine: BaseTurbine, index: number, seconds: number): SceneTurbine {
   const seed = phase(turbine.id) + index * 0.173
   const operationPower = turbine.operation?.power_kw ?? turbine.rated_power_kw * 0.74
   const wave = 0.82 + 0.14 * Math.sin(seconds * 0.16 + seed * 6.283) + 0.05 * Math.sin(seconds * 0.43 + seed * 12)
@@ -25,37 +34,124 @@ function liveTurbine(turbine: Turbine, index: number, seconds: number): SceneTur
     ratedPowerKw: turbine.rated_power_kw,
     liveMw: Math.max(0, powerKw / 1000),
     windSpeed: 6.1 + 2.3 * Math.sin(seconds * 0.08 + seed * 4) + seed * 1.4,
-    rotorRpm: turbine.status === 'fault' ? 0 : 8.2 + 4.6 * (powerKw / turbine.rated_power_kw),
+    rotorRpm: turbine.status === 'fault' ? 0 : 8.2 + 4.6 * Math.max(0, powerKw / turbine.rated_power_kw),
+    x: turbine.x,
+    z: turbine.z,
   }
 }
 
 const STATUS_TEXT = { running: '运行', warning: '预警', fault: '故障' } as const
 
 export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandbox' | 'gis') => void }) {
-  const [baseTurbines, setBaseTurbines] = useState<Turbine[]>([])
+  const [farms, setFarms] = useState<FarmOption[]>([])
+  const [turbinesByFarm, setTurbinesByFarm] = useState<Map<string, Turbine[]>>(new Map())
+  const [baseTurbines, setBaseTurbines] = useState<BaseTurbine[]>([])
+  const [selectedFarmId, setSelectedFarmId] = useState('')
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loadError, setLoadError] = useState('')
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [night, setNight] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('overview')
   const [tick, setTick] = useState(() => Date.now())
+  const [terrainVersion, setTerrainVersion] = useState(0)
+  const [terrainState, setTerrainState] = useState<TerrainState>({
+    version: 0, status: 'procedural', sourceText: 'PROCEDURAL · INITIALIZING',
+  })
+  const [terrainNotice, setTerrainNotice] = useState('')
+  const demAbortRef = useRef<AbortController | null>(null)
+  const terrainVersionRef = useRef(0)
+
+  const showFarm = useCallback(async (farmId: string, farmTurbines: Turbine[]) => {
+    demAbortRef.current?.abort()
+    const controller = new AbortController()
+    demAbortRef.current = controller
+    const projected = projectTurbines(farmTurbines)
+    setBaseTurbines(projected)
+    setSelectedId(current => current && projected.some(item => item.id === current)
+      ? current
+      : projected.find(item => item.status === 'warning')?.id ?? projected[0]?.id ?? null)
+    setSelectedFarmId(farmId)
+    setTerrainNotice('')
+    terrainVersionRef.current += 1
+    setTerrainState({ version: terrainVersionRef.current, status: 'loading', sourceText: `${farmId.toUpperCase()} · LOADING DEM` })
+    setTerrainVersion(terrainVersionRef.current)
+    try {
+      const result = await loadDemCached(farmTurbines, `${farmId}:2027-Q3`, controller.signal)
+      if (controller.signal.aborted) return
+      const gridProjection = result.grid.projection
+      const projectedForGrid = projected.map(turbine => ({
+        ...turbine,
+        ...projectToScene(turbine.lat, turbine.lng, gridProjection),
+      }))
+      setTerrainScene(result.grid, gridProjection, projectedForGrid)
+      setBaseTurbines(projectedForGrid)
+      terrainVersionRef.current += 1
+      setTerrainState({
+        version: terrainVersionRef.current,
+        status: 'dem',
+        sourceText: `REAL DEM · Z${result.zoom} · ${result.tileCount} TILES · ${farmId.toUpperCase()}`,
+      })
+      setTerrainVersion(terrainVersionRef.current)
+    } catch (error) {
+      if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return
+      const projection = createSceneProjection(farmTurbines)
+      setTerrainScene(null, projection, projected)
+      terrainVersionRef.current += 1
+      setTerrainState({
+        version: terrainVersionRef.current,
+        status: 'procedural',
+        sourceText: `PROCEDURAL FALLBACK · ${farmId.toUpperCase()}`,
+      })
+      setTerrainVersion(terrainVersionRef.current)
+      setTerrainNotice('实时高程不可用，已切换程序地形')
+      console.warn('DEM load failed', error)
+    }
+  }, [])
 
   useEffect(() => {
     let mounted = true
     async function load() {
-      const [turbines, alertRows] = await Promise.all([
-        api.turbines('2027-Q3', 'wf-hohhot'),
+      const [farmRows, allTurbines, alertRows] = await Promise.all([
+        api.windFarms(),
+        api.turbines('2027-Q3'),
         api.alerts(),
       ])
       if (!mounted) return
-      const showcase = turbines.slice(0, 12)
-      setBaseTurbines(showcase)
-      setSelectedId(current => current ?? showcase.find(item => item.status === 'warning')?.id ?? showcase[0]?.id ?? null)
+      const grouped = new Map<string, Turbine[]>()
+      allTurbines.forEach(turbine => {
+        const group = grouped.get(turbine.wind_farm_id) ?? []
+        group.push(turbine)
+        grouped.set(turbine.wind_farm_id, group)
+      })
+      const options: FarmOption[] = farmRows
+        .filter(farm => grouped.has(farm.id))
+        .map(farm => ({
+          id: farm.id,
+          name: farm.name,
+          lat: farm.lat,
+          lng: farm.lng,
+          turbineCount: grouped.get(farm.id)?.length ?? farm.turbineCount,
+        }))
+      setFarms(options)
+      setTurbinesByFarm(grouped)
       setAlerts(alertRows)
+      const initialId = options.find(farm => farm.id === 'wf-hohhot')?.id ?? options[0]?.id
+      if (initialId) await showFarm(initialId, grouped.get(initialId) ?? [])
     }
     load().catch(() => setLoadError('后端服务未连接，正在使用沙盘演示数据'))
-    return () => { mounted = false }
+    return () => {
+      mounted = false
+      demAbortRef.current?.abort()
+    }
+    // Load the master data once; farm changes are handled by showFarm.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!terrainNotice) return
+    const timer = window.setTimeout(() => setTerrainNotice(''), 5200)
+    return () => window.clearTimeout(timer)
+  }, [terrainNotice])
 
   useEffect(() => {
     const timer = window.setInterval(() => setTick(Date.now()), 1000)
@@ -67,7 +163,6 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     () => baseTurbines.map((turbine, index) => liveTurbine(turbine, index, seconds)),
     [baseTurbines, seconds],
   )
-
   const selected = turbines.find(item => item.id === selectedId) ?? null
   const totalPower = turbines.reduce((sum, item) => sum + item.liveMw, 0)
   const cumulativeMwh = 282 + totalPower * 0.94
@@ -99,6 +194,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     { id: -2, level: 'warning', source_type: 'turbine', source_id: 'WT-12', title: '偏航误差偏大', detail: '正在自动校准对风角度', occurred_at: new Date(Date.now() - 1000 * 60 * 47).toISOString(), resolved: false },
   ]
   const visibleAlerts = (alerts.length ? alerts : fallbackAlerts).slice(0, 4)
+  const selectedFarmName = farms.find(farm => farm.id === selectedFarmId)?.name ?? '未选择风场'
 
   return (
     <div className="sandbox-root">
@@ -110,14 +206,30 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
             <small>山地貌数字孪生中心</small>
           </div>
         </div>
-        <nav className="sandbox-tabs">
-          <button className="active">全局总览 <span>01</span></button>
-          <button onClick={() => onNavigate('gis')}>机组监测 <span>02</span></button>
-          <button onClick={() => onNavigate('gis')}>能源分析 <span>03</span></button>
-          <button onClick={() => onNavigate('gis')}>运维中心 <span>04</span></button>
-        </nav>
+        <div className="sandbox-header-center">
+          <nav className="sandbox-tabs">
+            <button className="active">全局总览 <span>01</span></button>
+            <button onClick={() => onNavigate('gis')}>机组监测 <span>02</span></button>
+            <button onClick={() => onNavigate('gis')}>能源分析 <span>03</span></button>
+            <button onClick={() => onNavigate('gis')}>运维中心 <span>04</span></button>
+          </nav>
+          <label className="farm-selector">
+            <span>风场</span>
+            <select
+              value={selectedFarmId}
+              onChange={event => {
+                const farmId = event.target.value
+                void showFarm(farmId, turbinesByFarm.get(farmId) ?? [])
+              }}
+            >
+              {farms.map(farm => (
+                <option key={farm.id} value={farm.id}>{farm.name} · {farm.turbineCount}台</option>
+              ))}
+            </select>
+          </label>
+        </div>
         <div className="sandbox-clock">
-          <span>晴天 · 微风在线</span>
+          <span>{selectedFarmName}</span>
           <b>{new Date(tick).toLocaleTimeString('zh-CN', { hour12: false })}</b>
         </div>
       </header>
@@ -136,7 +248,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
         <div className="kpi-card">
           <small>机组可利用率</small>
           <strong>{available.toFixed(1)}<em>%</em></strong>
-          <span>在线 {statusCounts.running + statusCounts.warning} / {turbines.length || 12} 台</span>
+          <span>在线 {statusCounts.running + statusCounts.warning} / {turbines.length} 台</span>
         </div>
         <div className="kpi-card">
           <small>当日等效发电</small>
@@ -188,13 +300,14 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           onSelect={setSelectedId}
           night={night}
           viewMode={viewMode}
+          terrain={{ ...terrainState, version: terrainVersion }}
           onNightChange={setNight}
           onViewModeChange={setViewMode}
         />
 
         <aside className="sandbox-column right">
-          <section className="glass-card">
-            <div className="card-head"><h2>机组状态矩阵</h2><span>全部 {turbines.length || 12} 台</span></div>
+          <section className="glass-card status-card">
+            <div className="card-head"><h2>机组状态矩阵</h2><span>全部 {turbines.length} 台</span></div>
             <div className="status-legend"><i className="run" />运行 <i className="warn" />预警 <i className="fault" />故障</div>
             <div className="matrix">
               {turbines.map(item => (
@@ -208,7 +321,6 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
                   {item.displayId.replace('WT-', '')}
                 </button>
               ))}
-              {!turbines.length && Array.from({ length: 12 }, (_, index) => <button key={index}>{String(index + 1).padStart(2, '0')}</button>)}
             </div>
           </section>
 
@@ -281,6 +393,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           </div>
         </section>
       </footer>
+      {terrainNotice && <div className="sandbox-toast">{terrainNotice}</div>}
       {loadError && <div className="sandbox-error">{loadError}</div>}
     </div>
   )
