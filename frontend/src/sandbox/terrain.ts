@@ -141,8 +141,11 @@ export function setTerrainScene(grid: DemGrid | null, projection: SceneProjectio
   activeProjection = projection
   activeTurbinePoints = turbinePoints
   if (grid) {
-    terrainElevationMin = (grid.minElevation - grid.minElevation) / METERS_PER_SCENE_UNIT * ELEVATION_EXAGGERATION + 1
-    terrainElevationMax = (grid.maxElevation - grid.minElevation) / METERS_PER_SCENE_UNIT * ELEVATION_EXAGGERATION + 1
+    const sorted = Float32Array.from(grid.heights).sort()
+    const lowElevation = sorted[Math.floor(sorted.length * 0.10)]
+    const highElevation = sorted[Math.min(sorted.length - 1, Math.floor(sorted.length * 0.92))]
+    terrainElevationMin = (lowElevation - grid.minElevation) / METERS_PER_SCENE_UNIT * ELEVATION_EXAGGERATION + 1
+    terrainElevationMax = (highElevation - grid.minElevation) / METERS_PER_SCENE_UNIT * ELEVATION_EXAGGERATION + 1
   } else {
     terrainElevationMin = 1
     terrainElevationMax = 36
@@ -150,8 +153,9 @@ export function setTerrainScene(grid: DemGrid | null, projection: SceneProjectio
 }
 
 function sampleDemGrid(x: number, z: number, grid: DemGrid): number | null {
-  const u = (x - grid.projection.minX) / (grid.projection.maxX - grid.projection.minX)
-  const v = (z - grid.projection.minZ) / (grid.projection.maxZ - grid.projection.minZ)
+  const halfScene = grid.projection.sideMeters / METERS_PER_SCENE_UNIT / 2
+  const u = (x + halfScene) / (halfScene * 2)
+  const v = (z + halfScene) / (halfScene * 2)
   if (u < 0 || u > 1 || v < 0 || v > 1) return null
 
   const fx = u * (grid.columns - 1)

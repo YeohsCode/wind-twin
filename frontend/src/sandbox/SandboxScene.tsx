@@ -130,12 +130,18 @@ export default function SandboxScene({
       const z = positions.getZ(index)
       const y = terrainHeight(x, z)
       positions.setY(index, y)
-      const band = (y - elevationRange.min) / (elevationRange.max - elevationRange.min)
+      const normalized = Math.max(0, Math.min(1, (y - elevationRange.min) / (elevationRange.max - elevationRange.min)))
+      const band = Math.pow(normalized, 0.68)
       if (band < 0.18) workColor.copy(low).lerp(valley, band / 0.18)
       else if (band < 0.46) workColor.copy(valley).lerp(mid, (band - 0.18) / 0.28)
       else if (band < 0.78) workColor.copy(mid).lerp(high, (band - 0.46) / 0.32)
       else workColor.copy(high).lerp(peak, Math.min(1, (band - 0.78) / 0.22))
-      workColor.multiplyScalar(0.9 + (Math.sin(x * 2.7) + Math.cos(z * 3.1)) * 0.035)
+      const reliefStep = size / segments
+      const eastRelief = terrainHeight(x + reliefStep, z) - y
+      const southRelief = terrainHeight(x, z + reliefStep) - y
+      const slopeShade = Math.max(0.78, Math.min(1.24, 1 + (eastRelief + southRelief) * 0.03))
+      const demBoost = terrainRef.current.status === 'dem' ? 1.38 : 1
+      workColor.multiplyScalar(demBoost * slopeShade * (0.94 + (Math.sin(x * 2.7) + Math.cos(z * 3.1)) * 0.035))
       colors[index * 3] = workColor.r
       colors[index * 3 + 1] = workColor.g
       colors[index * 3 + 2] = workColor.b

@@ -111,16 +111,20 @@ export async function loadDemForTurbines(
   canvas.width = columns * DEM_TILE_SIZE
   canvas.height = rows * DEM_TILE_SIZE
 
-  const tiles: Array<{ x: number; y: number; blob: Blob; sourceId: string }> = []
+  const tileRequests: Array<Promise<{ x: number; y: number; blob: Blob; sourceId: string }>> = []
   for (let tileY = minY; tileY <= maxY; tileY += 1) {
     for (let tileX = minX; tileX <= maxX; tileX += 1) {
-      const download = await fetchTile(zoom, tileX, tileY, signal)
-      tiles.push({ x: tileX, y: tileY, blob: download.blob, sourceId: download.sourceId })
+      tileRequests.push(fetchTile(zoom, tileX, tileY, signal)
+        .then(download => ({ x: tileX, y: tileY, blob: download.blob, sourceId: download.sourceId })))
     }
   }
-  for (const tile of tiles) {
-    await decodeTile(tile.blob, canvas, (tile.x - minX) * DEM_TILE_SIZE, (tile.y - minY) * DEM_TILE_SIZE)
-  }
+  const tiles = await Promise.all(tileRequests)
+  await Promise.all(tiles.map(tile => decodeTile(
+    tile.blob,
+    canvas,
+    (tile.x - minX) * DEM_TILE_SIZE,
+    (tile.y - minY) * DEM_TILE_SIZE,
+  )))
 
   const context = canvas.getContext('2d')
   if (!context) throw new Error('Canvas 2D is unavailable')

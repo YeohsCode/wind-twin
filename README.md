@@ -117,6 +117,40 @@ npm --prefix frontend run build
 
 本仓库实测截图已包含 terrain、instanced 森林、风机、WT 标签、工具条和完整仪表盘布局。
 
+### 真实 DEM / 地形沙盘
+
+沙盘页现在支持按风场切换。前端用风机 Web-Mercator 包围盒选择 terrarium DEM
+瓦片矩阵，拼接后解码为 Float32 高度网格，再按 `1 scene unit ≈ 30 m`
+投影到 XZ；风机坐标使用同一投影并贴地。当前风场种子数据的机群实际跨度
+约 30-45 km，因此加载器会自动扩展到约 50 km 方形范围并选择 z11；
+小于 8 km 的机群会自动选择 z13-z14。
+
+公共 terrarium 瓦片源顺序为：Mapterhorn，然后 AWS Open Terrain Tiles。
+若主源不可用，单张瓦片会自动落到 fallback。可用下面的命令验证 200 和 PNG：
+
+```bash
+# 当前环境实测可用的 fallback source（HTTP 200, image/png）
+curl -L -sS -o /tmp/terrain-tile.png -w '%{http_code} %{content_type}\n' \
+  'https://s3.amazonaws.com/elevation-tiles-prod/terrarium/13/6710/3104.png'
+file /tmp/terrain-tile.png
+
+# Mapterhorn 参考源；本仓库当前网络返回 SSL/connection error 时自动用 fallback
+curl -L -sS -o /tmp/terrain-tile.png -w '%{http_code} %{content_type}\n' \
+  'https://elevation-tiles-prod.mapterhorn.com/terrarium/13/6710/3104.png'
+file /tmp/terrain-tile.png
+```
+
+可用 `frontend/.env.local` 覆盖公共源：
+
+```env
+VITE_DEM_TILE_URL_TEMPLATE=https://your.example/terrarium/{z}/{x}/{y}.png
+```
+
+离线兜底：临时启动前端
+`VITE_DEM_TILE_URL_TEMPLATE='https://127.0.0.1:9/{z}/{x}/{y}.png' npx vite --port 5174`。
+等待约 10 秒后应出现“实时高程不可用，已切换程序地形”，左上角显示
+`PROCEDURAL FALLBACK`，页面不白屏且风机仍按真实坐标投影。
+
 ### 后端核心 API 冒烟
 
 后端运行后执行：
