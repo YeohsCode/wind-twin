@@ -126,7 +126,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
         <div className="kpi-card accent">
           <small>全场实时功率</small>
           <strong>{totalPower.toFixed(2)}<em>MW</em></strong>
-          <span>装机 {installedCapacity.toFixed(1)} MW · {(totalPower / Math.max(1, installedCapacity) * 100).toFixed(1)}%</span>
+          <span>装机 {installedCapacity.toFixed(1)} MW · 后端基线波形推演</span>
         </div>
         <div className="kpi-card">
           <small>当日累计发电</small>
@@ -222,7 +222,10 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
               <b>{selected?.liveMw.toFixed(2) ?? '--'}<em>MW</em></b>
             </div>
             <div className="dotted-progress">
-              {Array.from({ length: 24 }, (_, index) => <i key={index} className={index < Math.round((selected?.liveMw ?? 0) / (selected?.ratedPowerKw ?? 1) * 1000 / 36 * 24 / 10 * 10) ? 'on' : ''} />)}
+              {Array.from({ length: 24 }, (_, index) => {
+                const load = selected ? selected.liveMw / (selected.ratedPowerKw / 1000) : 0.72
+                return <i key={index} className={index < Math.round(Math.min(1, load) * 24) ? 'on' : ''} />
+              })}
               <span>运行负载 {(selected ? selected.liveMw / (selected.ratedPowerKw / 1000) * 100 : 78).toFixed(0)}%</span>
             </div>
             <div className="mini-metrics">

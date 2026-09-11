@@ -5,6 +5,9 @@
 ## 功能概览
 
 ### 3D 数字孪生
+- `/` 默认进入程序化 three.js 地形沙盘：ridged/value noise 山体、等高色带、instanced 森林、
+  斜切沙盘底座、道路/输电线/升压站和 12 台可点击风机。
+- `/gis` 保留原 MapLibre 卫星影像与规划视图，通过顶部 tab 往返切换。
 - EOX Sentinel-2 卫星底图、Mapterhorn Terrarium DEM、hillshade 与 3D terrain。
 - OpenFreeMap / OSM 矢量水系与行政边界；内置华北行政区、风场边界、升压站。
 - 144 台确定性种子风机，Three.js MapLibre custom layer 渲染塔筒与旋转叶片。
@@ -100,6 +103,19 @@ CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```bash
 npm --prefix frontend run build
 ```
+
+### 3D 沙盘视觉冒烟
+
+后端与前端 dev server 运行后，用 software WebGL 截图确认首屏不是黑屏或平面地图：
+
+```bash
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --use-gl=swiftshader --enable-unsafe-swiftshader \
+  --screenshot=/tmp/sb.png --window-size=1600,900 --timeout=15000 \
+  http://127.0.0.1:5173/
+```
+
+本仓库实测截图已包含 terrain、instanced 森林、风机、WT 标签、工具条和完整仪表盘布局。
 
 ### 后端核心 API 冒烟
 
