@@ -22,7 +22,8 @@ export const DEM_TILE_SOURCES: TileSource[] = CUSTOM_SOURCE
 export const DEM_TIMEOUT_MS = 10_000
 export const DEM_TILE_SIZE = 256
 export const DEM_MAX_TILES_PER_AXIS = 5
-export const ELEVATION_EXAGGERATION = 1.0
+// Vertical exaggeration: 2x keeps ridges/valleys readable at sand-table scale.
+export const ELEVATION_EXAGGERATION = 2.0
 export const METERS_PER_SCENE_UNIT = 30
 
 export function buildDemTileUrl(source: TileSource, z: number, x: number, y: number): string {

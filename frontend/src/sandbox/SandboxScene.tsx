@@ -77,8 +77,8 @@ export default function SandboxScene({
 
     const scene = new THREE.Scene()
     sceneRef.current = scene
-    scene.background = new THREE.Color('#04100c')
-    scene.fog = new THREE.Fog('#04100c', size * 0.85, size * 2.4)
+    scene.background = new THREE.Color(nightRef.current ? '#010806' : '#a8d8ea')
+    scene.fog = new THREE.Fog(nightRef.current ? '#010806' : '#a8d8ea', size * 0.85, size * 2.4)
 
     const camera = new THREE.PerspectiveCamera(42, mount.clientWidth / mount.clientHeight, 0.1, Math.max(1800, size * 6))
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
@@ -102,10 +102,10 @@ export default function SandboxScene({
     controls.maxDistance = Math.max(360, size * 2.2)
     controls.target.set(0, 10, 0)
 
-    const ambient = new THREE.HemisphereLight('#d8ffe8', '#173626', night ? 0.42 : 1.08)
+    const ambient = new THREE.HemisphereLight('#d8ffe8', '#173626', nightRef.current ? 0.42 : 1.5)
     ambientRef.current = ambient
     scene.add(ambient)
-    const sun = new THREE.DirectionalLight('#fff6df', night ? 0.22 : 2.0)
+    const sun = new THREE.DirectionalLight('#fff6df', nightRef.current ? 0.22 : 2.6)
     sunRef.current = sun
     sun.position.set(size * 0.44, size * 0.62, size * 0.34)
     scene.add(sun)
@@ -230,7 +230,9 @@ export default function SandboxScene({
       scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), cableMaterial))
     })
 
-    const modelScale = Math.max(0.75, Math.min(1.55, size / 240))
+    // Visual scale: real proportions (1 unit = 30 m) read as tiny dots at
+    // sand-table zoom levels, so turbines are drawn ~2x oversized on purpose.
+    const modelScale = Math.max(1.6, Math.min(3.2, size / 130))
     const towerGeometry = new THREE.CylinderGeometry(0.45, 1.0, 22, 18)
     towerGeometry.translate(0, 11, 0)
     const nacelleGeometry = new THREE.BoxGeometry(4.6, 1.5, 1.55)
@@ -297,7 +299,7 @@ export default function SandboxScene({
           onSelect(turbine.id)
         })
         const label = new CSS2DObject(labelElement)
-        label.position.set(0, 33.5, 0)
+        label.position.set(0, 55, 0)
 
         group.add(tower, nacelle, hub, rotor, warning, label)
         scene.add(group)
@@ -478,10 +480,10 @@ export default function SandboxScene({
     const ambient = ambientRef.current
     const sun = sunRef.current
     if (!scene || !ambient || !sun) return
-    if (scene.background instanceof THREE.Color) scene.background.set(night ? '#010806' : '#04100c')
-    if (scene.fog instanceof THREE.Fog) scene.fog.color.set(night ? '#010806' : '#04100c')
-    ambient.intensity = night ? 0.30 : 1.08
-    sun.intensity = night ? 0.12 : 2.0
+    if (scene.background instanceof THREE.Color) scene.background.set(night ? '#010806' : '#a8d8ea')
+    if (scene.fog instanceof THREE.Fog) scene.fog.color.set(night ? '#010806' : '#a8d8ea')
+    ambient.intensity = night ? 0.30 : 1.5
+    sun.intensity = night ? 0.12 : 2.6
   }, [night])
 
   useEffect(() => {
@@ -521,7 +523,8 @@ export default function SandboxScene({
               {mode === 'overview' ? '全景' : mode === 'top' ? '俯视' : mode === 'orbit' ? '巡航' : '侧视'}
             </button>
           ))}
-          <button className={night ? 'active' : ''} onClick={() => onNightChange(!night)}>夜晚</button>
+          <button className={night ? '' : 'active'} onClick={() => onNightChange(false)}>白天</button>
+          <button className={night ? 'active' : ''} onClick={() => onNightChange(true)}>夜晚</button>
         </div>
         <div className="tool-group zoom-group">
           <button onClick={() => zoomRef.current?.(1)}>＋</button>
