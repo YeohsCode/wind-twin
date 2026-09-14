@@ -14,3 +14,9 @@ export type Overview = { regions:number; windFarms:number; turbines:number; stat
 export type AIChart = { key:string; option:any }
 export type AIResult = { answer:string; actions:SceneAction[]; context:any; charts:AIChart[]; source:string }
 export type SceneAction = { type:'SET_FILTER'|'SHOW_LAYERS'|'FOCUS_REGION'|'HIGHLIGHT_ALERTS'|'COMPARE_PLANS'; payload:any }
+export type MapFeature = {
+  type: 'Feature'
+  properties: { id: string; kind: 'wind_farm'|'turbine'|'substation'|'label'; name: string; status?: string; voltageKv?: number }
+  geometry: { type: 'Point'|'Polygon'; coordinates: any }
+}
+export type MapFeatureCollection = { type: 'FeatureCollection'; features: MapFeature[] }

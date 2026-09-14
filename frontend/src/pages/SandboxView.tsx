@@ -4,7 +4,7 @@ import Chart from '../components/Chart'
 import { api } from '../api'
 import { loadDemCached } from '../sandbox/dem'
 import { createSceneProjection, projectToScene, setTerrainScene } from '../sandbox/terrain'
-import type { Alert, Turbine, WindFarm } from '../types'
+import type { Alert, MapFeatureCollection, Turbine, WindFarm } from '../types'
 
 type ViewMode = 'overview' | 'top' | 'side' | 'orbit'
 type BaseTurbine = Turbine & { x: number; z: number }
@@ -35,6 +35,8 @@ function liveTurbine(turbine: BaseTurbine, index: number, seconds: number): Scen
     liveMw: Math.max(0, powerKw / 1000),
     windSpeed: 6.1 + 2.3 * Math.sin(seconds * 0.08 + seed * 4) + seed * 1.4,
     rotorRpm: turbine.status === 'fault' ? 0 : 8.2 + 4.6 * Math.max(0, powerKw / turbine.rated_power_kw),
+    lat: turbine.lat,
+    lng: turbine.lng,
     x: turbine.x,
     z: turbine.z,
   }
@@ -52,6 +54,9 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [night, setNight] = useState(false)
   const [viewMode, setViewMode] = useState<ViewMode>('overview')
+  const [basemapMode, setBasemapMode] = useState<'current' | 'street' | 'satellite'>('current')
+  const [mapFeatures, setMapFeatures] = useState<MapFeatureCollection | null>(null)
+  const [focusRequest, setFocusRequest] = useState<{ id: string; nonce: number } | null>(null)
   const [tick, setTick] = useState(() => Date.now())
   const [terrainVersion, setTerrainVersion] = useState(0)
   const [terrainState, setTerrainState] = useState<TerrainState>({
@@ -71,6 +76,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
       ? current
       : projected.find(item => item.status === 'warning')?.id ?? projected[0]?.id ?? null)
     setSelectedFarmId(farmId)
+    setMapFeatures(null)
     setTerrainNotice('')
     terrainVersionRef.current += 1
     setTerrainState({ version: terrainVersionRef.current, status: 'loading', sourceText: `${farmId.toUpperCase()} · LOADING DEM` })
@@ -106,6 +112,12 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
       setTerrainNotice('实时高程不可用，已切换程序地形')
       console.warn('DEM load failed', error)
     }
+    api.mapFeatures(farmId)
+      .then(result => setMapFeatures(result))
+      .catch(error => {
+        setMapFeatures(null)
+        console.warn('Map feature load failed', error)
+      })
   }, [])
 
   useEffect(() => {
@@ -163,8 +175,13 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     () => baseTurbines.map((turbine, index) => liveTurbine(turbine, index, seconds)),
     [baseTurbines, seconds],
   )
+  const chartTurbines = useMemo(
+    () => baseTurbines.map((turbine, index) => liveTurbine(turbine, index, 43_200 + phase(selectedFarmId) * 3600)),
+    [baseTurbines, selectedFarmId],
+  )
   const selected = turbines.find(item => item.id === selectedId) ?? null
   const totalPower = turbines.reduce((sum, item) => sum + item.liveMw, 0)
+  const chartTotalPower = chartTurbines.reduce((sum, item) => sum + item.liveMw, 0)
   const cumulativeMwh = 282 + totalPower * 0.94
   const available = turbines.length ? Math.round((turbines.filter(t => t.status === 'running').length + turbines.filter(t => t.status === 'warning').length * 0.5) / turbines.length * 1000) / 10 : 91.7
   const installedCapacity = turbines.reduce((sum, item) => sum + item.ratedPowerKw, 0) / 1000
@@ -184,10 +201,34 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     for (let hour = 0; hour < 24; hour += 1) {
       const base = 16 + 13 * Math.exp(-Math.pow((hour - 11) / 6.5, 2)) + 3.2 * Math.sin(hour * 0.72)
       predicted.push(Number(base.toFixed(1)))
-      actual.push(Number((base * (0.74 + 0.10 * Math.sin(hour * 1.7 + 1) + totalPower * 0.004)).toFixed(1)))
+      actual.push(Number((base * (0.74 + 0.10 * Math.sin(hour * 1.7 + 1) + chartTotalPower * 0.004)).toFixed(1)))
     }
     return { predicted, actual }
-  }, [Math.round(totalPower * 4)])
+  }, [chartTotalPower])
+
+  const trendOption = useMemo(() => ({
+    backgroundColor: 'transparent',
+    grid: { left: 38, right: 14, top: 18, bottom: 24 },
+    tooltip: { trigger: 'axis' },
+    xAxis: { type: 'category', boundaryGap: false, data: Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}h`), axisLine: { lineStyle: { color: '#294d43' } } },
+    yAxis: { type: 'value', name: 'MW', splitLine: { lineStyle: { color: 'rgba(118,184,159,.12)' } } },
+    series: [
+      { name: '预测功率', type: 'line', smooth: true, symbol: 'none', data: trend.predicted, lineStyle: { color: '#4c8f77', width: 1.4 }, areaStyle: { color: 'rgba(76,143,119,.16)' } },
+      { name: '实际功率', type: 'line', smooth: true, symbol: 'none', data: trend.actual, lineStyle: { color: '#72f2c4', width: 2 }, areaStyle: { color: 'rgba(114,242,196,.18)' } },
+    ],
+  }), [trend])
+
+  const distributionOption = useMemo(() => ({
+    backgroundColor: 'transparent',
+    grid: { left: 34, right: 12, top: 18, bottom: 24 },
+    tooltip: {},
+    xAxis: { type: 'category', data: chartTurbines.map(item => item.displayId.replace('WT-', '')), axisLine: { lineStyle: { color: '#294d43' } } },
+    yAxis: { type: 'value', splitLine: { show: false } },
+    series: [{ type: 'bar', barWidth: 12, data: chartTurbines.map(item => ({
+      value: Number(item.liveMw.toFixed(2)),
+      itemStyle: { color: item.status === 'fault' ? '#ff5a48' : item.status === 'warning' ? '#ffb020' : '#67d8ab', borderRadius: [3, 3, 0, 0] },
+    })) }],
+  }), [chartTurbines])
 
   const fallbackAlerts: Alert[] = [
     { id: -1, level: 'warning', source_type: 'turbine', source_id: 'WT-09', title: '主轴温度偏高', detail: '冷却系统已自动投入', occurred_at: new Date(Date.now() - 1000 * 60 * 18).toISOString(), resolved: false },
@@ -301,8 +342,12 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           night={night}
           viewMode={viewMode}
           terrain={{ ...terrainState, version: terrainVersion }}
+          focusRequest={focusRequest}
+          basemapMode={basemapMode}
+          mapFeatures={mapFeatures}
           onNightChange={setNight}
           onViewModeChange={setViewMode}
+          onBasemapModeChange={setBasemapMode}
         />
 
         <aside className="sandbox-column right">
@@ -346,7 +391,17 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
               <div><span>输出电流</span><b>{Math.round((selected?.liveMw ?? 2) * 46)} A</b></div>
               <div><span>定子温度</span><b>{(52 + (selected?.liveMw ?? 2) * 6).toFixed(1)} ℃</b></div>
             </div>
-            <button className="ghost-button">定位机舱 ⟶</button>
+            <button
+              className="ghost-button"
+              disabled={!selected}
+              onClick={() => {
+                if (!selected) return
+                setViewMode('overview')
+                setFocusRequest(current => ({ id: selected.id, nonce: (current?.nonce ?? 0) + 1 }))
+              }}
+            >
+              定位机舱 ⟶
+            </button>
           </section>
         </aside>
       </main>
@@ -354,31 +409,11 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
       <footer className="sandbox-bottom">
         <section className="glass-card">
           <div className="card-head"><h2>出力趋势</h2><span>预测 vs 实际 · 24H</span></div>
-          <Chart height={126} option={{
-            backgroundColor: 'transparent',
-            grid: { left: 38, right: 14, top: 18, bottom: 24 },
-            tooltip: { trigger: 'axis' },
-            xAxis: { type: 'category', boundaryGap: false, data: Array.from({ length: 24 }, (_, i) => `${String(i).padStart(2, '0')}h`), axisLine: { lineStyle: { color: '#294d43' } } },
-            yAxis: { type: 'value', name: 'MW', splitLine: { lineStyle: { color: 'rgba(118,184,159,.12)' } } },
-            series: [
-              { name: '预测功率', type: 'line', smooth: true, symbol: 'none', data: trend.predicted, lineStyle: { color: '#4c8f77', width: 1.4 }, areaStyle: { color: 'rgba(76,143,119,.16)' } },
-              { name: '实际功率', type: 'line', smooth: true, symbol: 'none', data: trend.actual, lineStyle: { color: '#72f2c4', width: 2 }, areaStyle: { color: 'rgba(114,242,196,.18)' } },
-            ],
-          }} />
+          <Chart height={126} option={trendOption} />
         </section>
         <section className="glass-card">
           <div className="card-head"><h2>机舱功率分布</h2><span>MW / TURBINE</span></div>
-          <Chart height={126} option={{
-            backgroundColor: 'transparent',
-            grid: { left: 34, right: 12, top: 18, bottom: 24 },
-            tooltip: {},
-            xAxis: { type: 'category', data: turbines.map(item => item.displayId.replace('WT-', '')), axisLine: { lineStyle: { color: '#294d43' } } },
-            yAxis: { type: 'value', splitLine: { show: false } },
-            series: [{ type: 'bar', barWidth: 12, data: turbines.map(item => ({
-              value: Number(item.liveMw.toFixed(2)),
-              itemStyle: { color: item.status === 'fault' ? '#ff5a48' : item.status === 'warning' ? '#ffb020' : '#67d8ab', borderRadius: [3, 3, 0, 0] },
-            })) }],
-          }} />
+          <Chart height={126} option={distributionOption} />
         </section>
         <section className="glass-card events">
           <div className="card-head"><h2>运行事件</h2><span>{visibleAlerts.length} 待确认</span></div>

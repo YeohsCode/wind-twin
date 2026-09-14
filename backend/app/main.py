@@ -83,6 +83,54 @@ def turbines(period: str | None = None, wind_farm_id: str | None = None, status:
     } for t in rows if not status or t.status == status]
 
 
+@app.get("/api/map-features")
+def map_features(wind_farm_id: str | None = None, db: Session = Depends(get_db)):
+    farm_query = db.query(WindFarm)
+    turbine_query = db.query(Turbine)
+    if wind_farm_id:
+        farm_query = farm_query.filter(WindFarm.id == wind_farm_id)
+        turbine_query = turbine_query.filter(Turbine.wind_farm_id == wind_farm_id)
+    farms = farm_query.all()
+    turbines = turbine_query.all()
+    farm_region_ids = {farm.region_id for farm in farms}
+    substations = db.query(Substation).filter(Substation.region_id.in_(farm_region_ids)).all() if farm_region_ids else []
+
+    def lng_lat(point):
+        lat, lng = point
+        return [lng, lat]
+
+    features = []
+    for farm in farms:
+        features.append({
+            "type": "Feature",
+            "properties": {"id": farm.id, "kind": "wind_farm", "name": farm.name},
+            "geometry": {"type": "Polygon", "coordinates": [[lng_lat(point) for point in farm.boundary]]},
+        })
+        features.append({
+            "type": "Feature",
+            "properties": {"id": f"{farm.id}:label", "kind": "label", "name": farm.name},
+            "geometry": {"type": "Point", "coordinates": [farm.lng, farm.lat]},
+        })
+    for turbine in turbines:
+        features.append({
+            "type": "Feature",
+            "properties": {"id": turbine.id, "kind": "turbine", "name": turbine.name, "status": turbine.status},
+            "geometry": {"type": "Point", "coordinates": [turbine.lng, turbine.lat]},
+        })
+    for substation in substations:
+        features.append({
+            "type": "Feature",
+            "properties": {
+                "id": substation.id,
+                "kind": "substation",
+                "name": substation.name,
+                "voltageKv": substation.voltage_kv,
+            },
+            "geometry": {"type": "Point", "coordinates": [substation.lng, substation.lat]},
+        })
+    return {"type": "FeatureCollection", "features": features}
+
+
 @app.get("/api/factories")
 def factories(db: Session = Depends(get_db)):
     return db.query(Factory).all()

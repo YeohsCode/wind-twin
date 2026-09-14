@@ -2,7 +2,9 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
-import { activeTerrainProjection, forestCandidates, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
+import { METERS_PER_SCENE_UNIT } from './demSource'
+import { activeTerrainProjection, forestCandidates, projectToScene, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
+import type { MapFeatureCollection } from '../types'
 
 export type SceneTurbine = {
   id: string
@@ -12,6 +14,8 @@ export type SceneTurbine = {
   liveMw: number
   windSpeed: number
   rotorRpm: number
+  lat: number
+  lng: number
   x: number
   z: number
 }
@@ -28,9 +32,53 @@ type Props = {
   onSelect: (id: string) => void
   night: boolean
   viewMode: 'overview' | 'top' | 'side' | 'orbit'
+  basemapMode: 'current' | 'street' | 'satellite'
   terrain: TerrainState
+  focusRequest?: { id: string; nonce: number } | null
+  mapFeatures: MapFeatureCollection | null
   onNightChange: (night: boolean) => void
   onViewModeChange: (mode: Props['viewMode']) => void
+  onBasemapModeChange: (mode: Props['basemapMode']) => void
+}
+
+const TOWER_HEIGHT_UNITS = 100 / METERS_PER_SCENE_UNIT
+const NACELLE_LENGTH_UNITS = 22 / METERS_PER_SCENE_UNIT
+const ROTOR_RADIUS_UNITS = 58 / METERS_PER_SCENE_UNIT
+function basemapZoom(sideMeters: number) {
+  const mosaicMeters = 40_075_016.868 * 3
+  return Math.max(11, Math.min(15, Math.floor(Math.log2(mosaicMeters / Math.max(1, sideMeters * 1.2)))))
+}
+
+function lngToTile(lng: number, zoom: number) {
+  return Math.floor(((lng + 180) / 360) * 2 ** zoom)
+}
+
+function latToTile(lat: number, zoom: number) {
+  const rad = lat * Math.PI / 180
+  return Math.floor((1 - Math.log(Math.tan(rad) + 1 / Math.cos(rad)) / Math.PI) / 2 * 2 ** zoom)
+}
+
+function mercatorY(lat: number) {
+  const rad = Math.max(-85.05112878, Math.min(85.05112878, lat)) * Math.PI / 180
+  return Math.log(Math.tan(Math.PI / 4 + rad / 2)) * 6_378_137
+}
+
+function buildBasemapTiles(lat: number, lng: number, mode: 'street' | 'satellite') {
+  const zoom = basemapZoom(activeTerrainProjection().sideMeters)
+  const centerX = lngToTile(lng, zoom)
+  const centerY = latToTile(lat, zoom)
+  const tiles: Array<{ key: string; url: string; row: number; col: number }> = []
+  for (let row = -1; row <= 1; row += 1) {
+    for (let col = -1; col <= 1; col += 1) {
+      const x = centerX + col
+      const y = centerY + row
+      const url = mode === 'street'
+        ? `https://tile.openstreetmap.org/${zoom}/${x}/${y}.png`
+        : `https://tiles.maps.eox.at/wmts/1.0.0/s2cloudless-2020_3857/default/g/${zoom}/${y}/${x}.jpg`
+      tiles.push({ key: `${mode}-${zoom}-${x}-${y}`, url, row: row + 1, col: col + 1 })
+    }
+  }
+  return tiles
 }
 
 export default function SandboxScene({
@@ -39,9 +87,13 @@ export default function SandboxScene({
   onSelect,
   night,
   viewMode,
+  basemapMode,
   terrain,
+  focusRequest,
+  mapFeatures,
   onNightChange,
   onViewModeChange,
+  onBasemapModeChange,
 }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
   const dataRef = useRef(turbines)
@@ -57,14 +109,28 @@ export default function SandboxScene({
   const viewModeRef = useRef(viewMode)
   const terrainRef = useRef(terrain)
   const sceneRef = useRef<THREE.Scene | null>(null)
+  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
+  const controlsRef = useRef<OrbitControls | null>(null)
   const ambientRef = useRef<THREE.HemisphereLight | null>(null)
   const sunRef = useRef<THREE.DirectionalLight | null>(null)
+  const focusNacelleRef = useRef<((id: string) => void) | null>(null)
+  const terrainGeometryRef = useRef<THREE.BufferGeometry | null>(null)
+  const basemapMeshRef = useRef<THREE.Mesh | null>(null)
+  const gisGroupRef = useRef<THREE.Group | null>(null)
 
   dataRef.current = turbines
   selectedRef.current = selectedId
   nightRef.current = night
   viewModeRef.current = viewMode
   terrainRef.current = terrain
+
+  const projection = activeTerrainProjection()
+  const centerLat = dataRef.current.length ? dataRef.current.reduce((sum, item) => sum + item.lat, 0) / dataRef.current.length : 41.05
+  const centerLng = dataRef.current.length ? dataRef.current.reduce((sum, item) => sum + item.lng, 0) / dataRef.current.length : 111.45
+  const zoom = basemapZoom(activeTerrainProjection().sideMeters)
+  const basemapTiles = basemapMode === 'current' ? [] : buildBasemapTiles(centerLat, centerLng, basemapMode)
+  const centerXTile = lngToTile(centerLng, zoom)
+  const centerYTile = latToTile(centerLat, zoom)
 
   useEffect(() => {
     const mount = mountRef.current
@@ -78,9 +144,9 @@ export default function SandboxScene({
     const scene = new THREE.Scene()
     sceneRef.current = scene
     scene.background = new THREE.Color(nightRef.current ? '#010806' : '#a8d8ea')
-    scene.fog = new THREE.Fog(nightRef.current ? '#010806' : '#a8d8ea', size * 0.85, size * 2.4)
 
     const camera = new THREE.PerspectiveCamera(42, mount.clientWidth / mount.clientHeight, 0.1, Math.max(1800, size * 6))
+    cameraRef.current = camera
     const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' })
     renderer.setSize(mount.clientWidth, mount.clientHeight)
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
@@ -89,6 +155,7 @@ export default function SandboxScene({
     mount.appendChild(renderer.domElement)
 
     const controls = new OrbitControls(camera, renderer.domElement)
+    controlsRef.current = controls
 
     const labelRenderer = new CSS2DRenderer()
     labelRenderer.setSize(mount.clientWidth, mount.clientHeight)
@@ -185,6 +252,8 @@ export default function SandboxScene({
     plinth.position.y = bottomY - 1.5
     scene.add(plinth)
 
+    terrainGeometryRef.current = terrainGeometry
+
     // Instanced forest stays clear of the real turbine pads.
     const forest = forestCandidates(Math.round(Math.min(1300, Math.max(650, size * 4))))
     const treeGeometry = new THREE.ConeGeometry(1.05, 1.85, 5)
@@ -206,40 +275,14 @@ export default function SandboxScene({
     trees.instanceMatrix.needsUpdate = true
     scene.add(trees)
 
-    // The collection point is placed in the quadrant opposite the wind-farm centroid.
-    const stationX = half * 0.62
-    const stationZ = half * 0.62
-    const station = new THREE.Group()
-    const stationBase = new THREE.Mesh(new THREE.BoxGeometry(16, 0.7, 12), new THREE.MeshStandardMaterial({ color: '#243138', roughness: 0.75 }))
-    const building = new THREE.Mesh(new THREE.BoxGeometry(6, 4, 5), new THREE.MeshStandardMaterial({ color: '#d9dbd5', roughness: 0.55 }))
-    building.position.set(-2, 2.4, 0)
-    const gantry = new THREE.Mesh(new THREE.BoxGeometry(1, 9, 1), new THREE.MeshStandardMaterial({ color: '#b9c3c7', roughness: 0.4, metalness: 0.3 }))
-    gantry.position.set(4, 4.5, 0)
-    station.add(stationBase, building, gantry)
-    station.position.set(stationX, terrainHeight(stationX, stationZ) + 0.5, stationZ)
-    station.rotation.y = -0.3
-    scene.add(station)
-
-    const cableMaterial = new THREE.LineBasicMaterial({ color: '#67e8f9', transparent: true, opacity: 0.32 })
-    dataRef.current.forEach(turbine => {
-      const points = [
-        new THREE.Vector3(turbine.x, terrainHeight(turbine.x, turbine.z) + 1, turbine.z),
-        new THREE.Vector3((turbine.x + stationX) / 2, terrainHeight((turbine.x + stationX) / 2, (turbine.z + stationZ) / 2) + 8, (turbine.z + stationZ) / 2),
-        station.position.clone().add(new THREE.Vector3(0, 6, 0)),
-      ]
-      scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), cableMaterial))
-    })
-
-    // Visual scale: real proportions (1 unit = 30 m) read as tiny dots at
-    // sand-table zoom levels, so turbines are drawn ~2x oversized on purpose.
-    const modelScale = Math.max(1.6, Math.min(3.2, size / 130))
-    const towerGeometry = new THREE.CylinderGeometry(0.45, 1.0, 22, 18)
-    towerGeometry.translate(0, 11, 0)
-    const nacelleGeometry = new THREE.BoxGeometry(4.6, 1.5, 1.55)
-    const hubGeometry = new THREE.SphereGeometry(0.82, 16, 12)
-    const bladeGeometry = new THREE.CylinderGeometry(0.10, 1.05, 15, 10, 1, false)
-    bladeGeometry.translate(0, 7.5, 0)
-    const warningGeometry = new THREE.SphereGeometry(0.22, 10, 8)
+    const modelScale = 1
+    const towerGeometry = new THREE.CylinderGeometry(0.055, 0.12, TOWER_HEIGHT_UNITS, 18)
+    towerGeometry.translate(0, TOWER_HEIGHT_UNITS / 2, 0)
+    const nacelleGeometry = new THREE.BoxGeometry(NACELLE_LENGTH_UNITS, 0.28, 0.24)
+    const hubGeometry = new THREE.SphereGeometry(0.16, 16, 12)
+    const bladeGeometry = new THREE.BoxGeometry(0.055, ROTOR_RADIUS_UNITS, 0.035)
+    bladeGeometry.translate(0, ROTOR_RADIUS_UNITS / 2, 0)
+    const warningGeometry = new THREE.SphereGeometry(0.12, 10, 8)
 
     const buildTurbines = () => {
       turbineMapRef.current.forEach(group => {
@@ -271,24 +314,26 @@ export default function SandboxScene({
         })
         const tower = new THREE.Mesh(towerGeometry, bodyMaterial)
         const nacelle = new THREE.Mesh(nacelleGeometry, bodyMaterial)
-        nacelle.position.set(0, 22, 0)
+        nacelle.position.set(NACELLE_LENGTH_UNITS * 0.34, TOWER_HEIGHT_UNITS, 0)
         const hub = new THREE.Mesh(hubGeometry, bodyMaterial)
-        hub.position.set(2.35, 22, 0)
+        hub.position.set(NACELLE_LENGTH_UNITS * 0.78, TOWER_HEIGHT_UNITS, 0)
 
         const rotor = new THREE.Group()
         rotor.position.copy(hub.position)
         rotor.userData = { turbineId: turbine.id, clickable: true }
         for (let bladeIndex = 0; bladeIndex < 3; bladeIndex += 1) {
           const blade = new THREE.Mesh(bladeGeometry, bodyMaterial)
-          blade.rotation.z = (bladeIndex * Math.PI * 2) / 3
+          blade.rotation.x = (bladeIndex * Math.PI * 2) / 3
           blade.userData = { turbineId: turbine.id, clickable: true }
           rotor.add(blade)
         }
+        const lampColor = turbine.status === 'fault' ? '#ff3b28' : '#ffb020'
         const warning = new THREE.Mesh(warningGeometry, new THREE.MeshStandardMaterial({
-          color: '#ff2a1d', emissive: '#ff3b28', emissiveIntensity: nightRef.current ? 1.5 : 0.35,
+          color: lampColor, emissive: lampColor, emissiveIntensity: nightRef.current ? 1.5 : 0.35,
         }))
-        warning.position.set(0, 23.8, 0)
-        warning.visible = turbine.status !== 'fault'
+        warning.position.set(0, TOWER_HEIGHT_UNITS + 0.28, 0)
+        warning.userData = { status: turbine.status }
+        warning.visible = turbine.status !== 'running'
         warningLightsRef.current.push(warning)
 
         const labelElement = document.createElement('button')
@@ -299,7 +344,7 @@ export default function SandboxScene({
           onSelect(turbine.id)
         })
         const label = new CSS2DObject(labelElement)
-        label.position.set(0, 55, 0)
+        label.position.set(0, TOWER_HEIGHT_UNITS + ROTOR_RADIUS_UNITS + 1.2, 0)
 
         group.add(tower, nacelle, hub, rotor, warning, label)
         scene.add(group)
@@ -362,6 +407,20 @@ export default function SandboxScene({
     applyViewRef.current = applyView
     applyView()
 
+    focusNacelleRef.current = id => {
+      const turbine = dataRef.current.find(item => item.id === id)
+      if (!turbine) return
+      const ground = terrainHeight(turbine.x, turbine.z)
+      const target = new THREE.Vector3(turbine.x, ground + TOWER_HEIGHT_UNITS, turbine.z)
+      const offset = new THREE.Vector3(7.5, 4.2, 8.4)
+      controls.minDistance = 3
+      controls.target.copy(target)
+      camera.position.copy(target).add(offset)
+      camera.near = 0.05
+      camera.updateProjectionMatrix()
+      controls.update()
+    }
+
     const raycaster = new THREE.Raycaster()
     const pointer = new THREE.Vector2()
     let downPosition = { x: 0, y: 0 }
@@ -374,7 +433,7 @@ export default function SandboxScene({
       raycaster.setFromCamera(pointer, camera)
       const targets: THREE.Object3D[] = []
       turbineMapRef.current.forEach(group => targets.push(group, ...group.children))
-      const hits = raycaster.intersectObjects(targets, false)
+      const hits = raycaster.intersectObjects(targets, true)
       const hit = hits.find(item => item.object.userData.turbineId)
       if (hit) onSelect(String(hit.object.userData.turbineId))
     }
@@ -406,7 +465,7 @@ export default function SandboxScene({
         const rotor = bladeMapRef.current.get(turbine.id)
         if (rotor) {
           const speed = turbine.status === 'running' ? 0.58 + (index % 4) * 0.08 : turbine.status === 'warning' ? 0.20 : 0
-          rotor.rotation.z -= speed * delta
+          rotor.rotation.x -= speed * delta
         }
         const label = labelMapRef.current.get(turbine.id)
         if (label) {
@@ -416,6 +475,10 @@ export default function SandboxScene({
         }
       })
       warningLightsRef.current.forEach((light, index) => {
+        if (light.userData.status === 'running') {
+          light.visible = false
+          return
+        }
         const material = light.material as THREE.MeshStandardMaterial
         material.emissiveIntensity = nightRef.current ? 0.35 + blink * 1.9 : 0.25 + blink * 0.25
         if (nightRef.current && index % 4 === 0) light.visible = blink > 0.18
@@ -452,7 +515,6 @@ export default function SandboxScene({
       treeGeometry.dispose()
       treeMaterial.dispose()
       skirtGeometry.dispose()
-      cableMaterial.dispose()
       bladeGeometry.dispose()
       towerGeometry.dispose()
       nacelleGeometry.dispose()
@@ -461,10 +523,182 @@ export default function SandboxScene({
       renderer.dispose()
       mount.removeChild(renderer.domElement)
       mount.removeChild(labelRenderer.domElement)
+      sceneRef.current = null
+      cameraRef.current = null
+      controlsRef.current = null
+      focusNacelleRef.current = null
     }
     // A terrain version change deliberately rebuilds the WebGL scene around the new DEM extent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [terrain.version])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    const terrainGeometry = terrainGeometryRef.current
+    if (!scene || !terrainGeometry) return
+    if (basemapMode === 'current') {
+      if (basemapMeshRef.current) scene.remove(basemapMeshRef.current)
+      basemapMeshRef.current = null
+      return
+    }
+
+    let cancelled = false
+    const material = new THREE.MeshBasicMaterial({
+      transparent: true,
+      opacity: 0.82,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
+    })
+    const overlay = new THREE.Mesh(terrainGeometry, material)
+    overlay.renderOrder = 2
+    scene.add(overlay)
+    basemapMeshRef.current = overlay
+
+    const loader = new THREE.TextureLoader()
+    const west = centerXTile / 2 ** zoom * 360 - 180
+    const east = (centerXTile + 1) / 2 ** zoom * 360 - 180
+    const northLatRad = Math.PI - 2 * Math.PI * centerYTile / 2 ** zoom
+    const southLatRad = Math.PI - 2 * Math.PI * (centerYTile + 1) / 2 ** zoom
+    const north = mercatorY(Math.atan(Math.sinh(northLatRad)) * 180 / Math.PI)
+    const south = mercatorY(Math.atan(Math.sinh(southLatRad)) * 180 / Math.PI)
+    const westMeters = (west * Math.PI) / 180 * 6_378_137
+    const eastMeters = (east * Math.PI) / 180 * 6_378_137
+
+    Promise.all(basemapTiles.map(tile => loader.loadAsync(tile.url).then(texture => ({ tile, texture }))))
+      .then(entries => {
+        if (cancelled) return
+        const tileSize = 256
+        const canvas = document.createElement('canvas')
+        canvas.width = tileSize * 3
+        canvas.height = tileSize * 3
+        const context = canvas.getContext('2d')
+        if (!context) return
+        entries.forEach(({ tile, texture }) => {
+          context.drawImage(texture.image as HTMLImageElement, tile.col * tileSize, tile.row * tileSize, tileSize, tileSize)
+          texture.dispose()
+        })
+        const mapTexture = new THREE.CanvasTexture(canvas)
+        mapTexture.colorSpace = THREE.SRGBColorSpace
+        mapTexture.wrapS = THREE.ClampToEdgeWrapping
+        mapTexture.wrapT = THREE.ClampToEdgeWrapping
+        const projection = activeTerrainProjection()
+        const bounds = projection.sideMeters / 2
+        mapTexture.repeat.set(
+          projection.sideMeters / (eastMeters - westMeters),
+          projection.sideMeters / (north - south),
+        )
+        mapTexture.offset.set(
+          (projection.centerX - bounds - westMeters) / (eastMeters - westMeters),
+          (projection.centerZ - bounds - south) / (north - south),
+        )
+        material.map = mapTexture
+        material.needsUpdate = true
+      })
+      .catch(() => {
+        if (!cancelled) material.opacity = 0
+      })
+
+    return () => {
+      cancelled = true
+      scene.remove(overlay)
+      material.map?.dispose()
+      material.dispose()
+      if (basemapMeshRef.current === overlay) basemapMeshRef.current = null
+    }
+    // Tile centers only change when a new farm projection has replaced the terrain.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [basemapMode, terrain.version])
+
+  useEffect(() => {
+    const scene = sceneRef.current
+    if (!scene) return
+    if (gisGroupRef.current) {
+      scene.remove(gisGroupRef.current)
+      gisGroupRef.current.traverse(child => {
+        const mesh = child as THREE.Mesh
+        if (mesh.isMesh) {
+          mesh.geometry.dispose()
+          ;(mesh.material as THREE.Material)?.dispose()
+        }
+      })
+    }
+
+    const group = new THREE.Group()
+    gisGroupRef.current = group
+    const boundaryMaterial = new THREE.LineBasicMaterial({ color: '#7df3c4', transparent: true, opacity: 0.72 })
+    const cableMaterial = new THREE.LineBasicMaterial({ color: '#67e8f9', transparent: true, opacity: 0.32 })
+    mapFeatures?.features.forEach(feature => {
+      const { kind, name } = feature.properties
+      if (feature.geometry.type === 'Polygon' && kind === 'wind_farm') {
+        const ring = feature.geometry.coordinates[0] as Array<[number, number]>
+        const points = ring.map(([lat, lng]) => {
+          const place = projectToScene(lat, lng)
+          return new THREE.Vector3(place.x, terrainHeight(place.x, place.z) + 0.35, place.z)
+        })
+        group.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), boundaryMaterial))
+      }
+
+      if (feature.geometry.type === 'Point' && (kind === 'label' || kind === 'substation')) {
+        const [lng, lat] = feature.geometry.coordinates as [number, number]
+        const place = projectToScene(lat, lng)
+        if (kind === 'substation') {
+          const station = new THREE.Group()
+          const base = new THREE.Mesh(
+            new THREE.BoxGeometry(14, 0.7, 10),
+            new THREE.MeshStandardMaterial({ color: '#243138', roughness: 0.75 }),
+          )
+          const building = new THREE.Mesh(
+            new THREE.BoxGeometry(5, 3.4, 4),
+            new THREE.MeshStandardMaterial({ color: '#d9dbd5', roughness: 0.55 }),
+          )
+          building.position.set(-1.6, 2.1, 0)
+          const gantry = new THREE.Mesh(
+            new THREE.BoxGeometry(0.8, 8, 0.8),
+            new THREE.MeshStandardMaterial({ color: '#b9c3c7', roughness: 0.4, metalness: 0.3 }),
+          )
+          gantry.position.set(3.4, 4, 0)
+          station.add(base, building, gantry)
+          station.position.set(place.x, terrainHeight(place.x, place.z) + 0.35, place.z)
+          group.add(station)
+
+          dataRef.current.forEach(turbine => {
+            const midX = (turbine.x + place.x) / 2
+            const midZ = (turbine.z + place.z) / 2
+            const points = [
+              new THREE.Vector3(turbine.x, terrainHeight(turbine.x, turbine.z) + 1, turbine.z),
+              new THREE.Vector3(midX, terrainHeight(midX, midZ) + 8, midZ),
+              new THREE.Vector3(place.x, terrainHeight(place.x, place.z) + 6, place.z),
+            ]
+            group.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), cableMaterial))
+          })
+        }
+
+        const element = document.createElement('div')
+        element.className = 'scene-place-label'
+        element.textContent = kind === 'substation'
+          ? `${name} · ${feature.properties.voltageKv ?? ''}kV`
+          : name
+        const label = new CSS2DObject(element)
+        label.position.set(place.x, terrainHeight(place.x, place.z) + 1.2, place.z)
+        group.add(label)
+      }
+    })
+    scene.add(group)
+
+    return () => {
+      scene.remove(group)
+      group.traverse(child => {
+        const mesh = child as THREE.Mesh
+        if (mesh.isMesh) {
+          mesh.geometry.dispose()
+          ;(mesh.material as THREE.Material)?.dispose()
+        }
+      })
+      boundaryMaterial.dispose()
+      cableMaterial.dispose()
+    }
+  }, [mapFeatures, terrain.version])
 
   const turbineSignature = turbines.map(turbine => `${turbine.id}:${turbine.status}:${turbine.x.toFixed(2)}:${turbine.z.toFixed(2)}`).join('|')
   useEffect(() => {
@@ -481,10 +715,13 @@ export default function SandboxScene({
     const sun = sunRef.current
     if (!scene || !ambient || !sun) return
     if (scene.background instanceof THREE.Color) scene.background.set(night ? '#010806' : '#a8d8ea')
-    if (scene.fog instanceof THREE.Fog) scene.fog.color.set(night ? '#010806' : '#a8d8ea')
     ambient.intensity = night ? 0.30 : 1.5
     sun.intensity = night ? 0.12 : 2.6
   }, [night])
+
+  useEffect(() => {
+    if (focusRequest?.id) focusNacelleRef.current?.(focusRequest.id)
+  }, [focusRequest?.id, focusRequest?.nonce])
 
   useEffect(() => {
     turbineMapRef.current.forEach((group, id) => {
@@ -529,6 +766,13 @@ export default function SandboxScene({
         <div className="tool-group zoom-group">
           <button onClick={() => zoomRef.current?.(1)}>＋</button>
           <button onClick={() => zoomRef.current?.(-1)}>－</button>
+        </div>
+        <div className="tool-group">
+          {(['current', 'street', 'satellite'] as const).map(mode => (
+            <button key={mode} className={basemapMode === mode ? 'active' : ''} onClick={() => onBasemapModeChange(mode)}>
+              {mode === 'current' ? '当前' : mode === 'street' ? '街道' : '卫星'}
+            </button>
+          ))}
         </div>
       </div>
     </div>

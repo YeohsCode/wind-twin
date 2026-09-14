@@ -8,6 +8,8 @@ export const api = {
   overview: () => request<any>('/api/overview'),
   regions: () => request<any[]>('/api/regions'),
   windFarms: () => request<any[]>('/api/wind-farms'),
+  mapFeatures: (windFarmId?: string) =>
+    request<any>(`/api/map-features${windFarmId ? `?wind_farm_id=${encodeURIComponent(windFarmId)}` : ''}`),
   turbines: (period: string, windFarmId?: string) =>
     request<any[]>(`/api/turbines?period=${encodeURIComponent(period)}${windFarmId ? `&wind_farm_id=${encodeURIComponent(windFarmId)}` : ''}`),
   factories: () => request<any[]>('/api/factories'),
