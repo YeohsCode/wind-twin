@@ -3,7 +3,7 @@ import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { METERS_PER_SCENE_UNIT } from './demSource'
-import { activeTerrainProjection, forestCandidates, projectToScene, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
+import { activeTerrainProjection, projectToScene, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
 import type { MapFeatureCollection } from '../types'
 
 export type SceneTurbine = {
@@ -254,27 +254,6 @@ export default function SandboxScene({
 
     terrainGeometryRef.current = terrainGeometry
 
-    // Instanced forest stays clear of the real turbine pads.
-    const forest = forestCandidates(Math.round(Math.min(1300, Math.max(650, size * 4))))
-    const treeGeometry = new THREE.ConeGeometry(1.05, 1.85, 5)
-    treeGeometry.translate(0, 1.3, 0)
-    const treeMaterial = new THREE.MeshStandardMaterial({ color: '#122b1c', roughness: 0.82 })
-    const trees = new THREE.InstancedMesh(treeGeometry, treeMaterial, forest.length)
-    const matrix = new THREE.Matrix4()
-    const quaternion = new THREE.Quaternion()
-    const treeScale = Math.max(1, Math.min(2.5, size / 240))
-    forest.forEach((point, index) => {
-      const scale = point.scale * treeScale
-      matrix.compose(
-        new THREE.Vector3(point.x, point.y, point.z),
-        quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), point.tone * 12),
-        new THREE.Vector3(scale * (0.8 + point.tone * 0.4), scale * 0.82, scale * (0.8 + point.tone * 0.4)),
-      )
-      trees.setMatrixAt(index, matrix)
-    })
-    trees.instanceMatrix.needsUpdate = true
-    scene.add(trees)
-
     const modelScale = 1
     const towerGeometry = new THREE.CylinderGeometry(0.055, 0.12, TOWER_HEIGHT_UNITS, 18)
     towerGeometry.translate(0, TOWER_HEIGHT_UNITS / 2, 0)
@@ -512,8 +491,6 @@ export default function SandboxScene({
       renderer.domElement.removeEventListener('pointerup', onPointerUp)
       controls.dispose()
       terrainGeometry.dispose()
-      treeGeometry.dispose()
-      treeMaterial.dispose()
       skirtGeometry.dispose()
       bladeGeometry.dispose()
       towerGeometry.dispose()
