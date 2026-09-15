@@ -1,6 +1,8 @@
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
+import urllib.request
+import urllib.parse
 from .config import get_settings
 from .database import Base, engine, get_db
 from .models import *
@@ -33,6 +35,28 @@ def serialize_model(obj, excludes=()):
 @app.get("/api/health")
 def health(db: Session = Depends(get_db)):
     return {"status": "ok", "llmConfigured": settings.llm_ready, "turbines": db.query(Turbine).count()}
+
+
+@app.get("/api/elevation")
+def elevation(lat: str, lng: str):
+    """Open-Meteo Elevation proxy (Copernicus GLO-90). Frontend DEM fallback."""
+    try:
+        lats = [float(v) for v in lat.split(",") if v.strip()]
+        lngs = [float(v) for v in lng.split(",") if v.strip()]
+    except ValueError:
+        raise HTTPException(status_code=400, detail="lat/lng must be comma-separated floats")
+    if not lats or not lngs or len(lats) * len(lngs) > 10000:
+        raise HTTPException(status_code=400, detail="grid too large (max 10000 points)")
+    query = urllib.parse.urlencode({"latitude": ",".join(f"{v:.5f}" for v in lats),
+                                    "longitude": ",".join(f"{v:.5f}" for v in lngs)})
+    url = f"https://api.open-meteo.com/v1/elevation?{query}"
+    req = urllib.request.Request(url, headers={"User-Agent": "wind-twin-sandbox/1.0"})
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            import json
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as error:
+        raise HTTPException(status_code=502, detail=f"elevation upstream failed: {error}")
 
 
 @app.get("/api/overview")

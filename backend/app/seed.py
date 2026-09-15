@@ -27,6 +27,18 @@ WIND_FARMS = [
     ("wf-chengde", "承德围场风电场", "hebei", 41.85, 117.75, 1180),
     ("wf-tangshan", "唐山沿海风电场", "hebei", 39.32, 118.42, 20),
     ("wf-datum", "大同采煤沉陷区风电基地", "shanxi", 40.10, 113.28, 1080),
+    ("wf-nayong", "毕节纳雍山地示范风电场", "north-china", 26.78, 105.25, 1680),
+]
+
+# 纳雍示范项目：19 台 5MW + 1 台 5.56MW，山地脊线布置，坐标为项目区真实范围（毕节市纳雍县）。
+NAYONG_TURBINES = [
+    (26.78000, 105.29700), (26.78966, 105.28310), (26.79827, 105.27762),
+    (26.81344, 105.27571), (26.80884, 105.25859), (26.80965, 105.24711),
+    (26.81659, 105.23112), (26.80189, 105.22630), (26.79416, 105.21922),
+    (26.78658, 105.20364), (26.77510, 105.21548), (26.76584, 105.21922),
+    (26.75061, 105.21817), (26.75276, 105.23594), (26.75035, 105.24711),
+    (26.74127, 105.26154), (26.75509, 105.26914), (26.76173, 105.27762),
+    (26.76703, 105.29445),
 ]
 
 SUBSTATIONS = [
@@ -85,6 +97,19 @@ def run_seed(force: bool = False) -> int:
         for fid, name, rid, lat, lng, elev in WIND_FARMS:
             db.add(WindFarm(id=fid, name=name, region_id=rid, lat=lat, lng=lng, elevation_m=elev,
                             boundary=square(lat, lng, 0.18), commissioned_on=date(2018 + (rng % 5), 6, 15)))
+            if fid == "wf-nayong":
+                for i, (tlat, tlng) in enumerate(NAYONG_TURBINES):
+                    rng = (rng * 1103515245 + 12345) % 2147483648
+                    status = "warning" if rng % 29 == 0 else ("fault" if rng % 47 == 0 else "running")
+                    last = i == len(NAYONG_TURBINES) - 1
+                    db.add(Turbine(
+                        id=f"{fid}-T{i + 1:02d}", wind_farm_id=fid, name=f"纳雍-{i + 1:02d}",
+                        lat=tlat, lng=tlng,
+                        model="WT-5560" if last else "WT-5000",
+                        rated_power_kw=5560 if last else 5000, status=status,
+                        height_m=160,
+                    ))
+                continue
             for i in range(18):
                 tid = f"{fid}-T{i + 1:02d}"
                 rng = (rng * 1103515245 + 12345) % 2147483648

@@ -167,7 +167,93 @@ const demCache = new Map<string, DemLoadResult>()
 export async function loadDemCached(turbines: Array<{ lat: number; lng: number }>, cacheKey: string, signal?: AbortSignal) {
   const cached = demCache.get(cacheKey)
   if (cached) return cached
-  const result = await loadDemForTurbines(turbines, signal)
+  let result: DemLoadResult
+  try {
+    result = await loadDemForTurbines(turbines, signal)
+  } catch (error) {
+    if (signal?.aborted) throw error
+    // Tile sources unreachable (proxy/DNS issues) — sample real elevation via backend proxy.
+    result = await loadDemViaElevationApi(turbines, signal)
+  }
   demCache.set(cacheKey, result)
   return result
+}
+
+/**
+ * Fallback DEM: sample a real-elevation grid from Open-Meteo (Copernicus GLO-90)
+ * through the backend proxy at /api/elevation. Coarser than terrarium tiles but
+ * fully real terrain, no third-party tile host needed.
+ */
+export async function loadDemViaElevationApi(
+  turbines: Array<{ lat: number; lng: number }>,
+  signal?: AbortSignal,
+): Promise<DemLoadResult> {
+  if (!turbines.length) throw new Error('No turbine coordinates')
+  const projection = createSceneProjection(turbines)
+  const centerLat = ((projection.centerZ / EarthRadius) * 180) / Math.PI
+  const centerLng = ((projection.centerX / EarthRadius) * 180) / Math.PI
+  const latSpan = projection.sideMeters / 110_570
+  const lngSpan = projection.sideMeters / (111_320 * Math.max(0.2, Math.cos((centerLat * Math.PI) / 180)))
+
+  const samples = 64
+  const lats: number[] = []
+  const lngs: number[] = []
+  for (let i = 0; i < samples; i += 1) {
+    lats.push(centerLat - latSpan / 2 + (latSpan * i) / (samples - 1))
+    lngs.push(centerLng - lngSpan / 2 + (lngSpan * i) / (samples - 1))
+  }
+
+  const batchSize = 40 // 1600 points per request stays well under the 10k cap
+  const heights = new Float32Array(samples * samples)
+  let minElevation = Number.POSITIVE_INFINITY
+  let maxElevation = Number.NEGATIVE_INFINITY
+  let done = 0
+
+  for (let yStart = 0; yStart < samples; yStart += batchSize) {
+    const yEnd = Math.min(samples, yStart + batchSize)
+    for (let xStart = 0; xStart < samples; xStart += batchSize) {
+      const xEnd = Math.min(samples, xStart + batchSize)
+      const batchLats: number[] = []
+      const batchLngs: number[] = []
+      for (let y = yStart; y < yEnd; y += 1) {
+        for (let x = xStart; x < xEnd; x += 1) {
+          batchLats.push(lats[y])
+          batchLngs.push(lngs[x])
+        }
+      }
+      const params = new URLSearchParams({
+        lat: batchLats.map(v => v.toFixed(5)).join(','),
+        lng: batchLngs.map(v => v.toFixed(5)).join(','),
+      })
+      const response = await fetch(`/api/elevation?${params.toString()}`, { signal })
+      if (!response.ok) throw new Error(`elevation proxy HTTP ${response.status}`)
+      const payload = (await response.json()) as { elevation: number[] }
+      let index = 0
+      for (let y = yStart; y < yEnd; y += 1) {
+        for (let x = xStart; x < xEnd; x += 1) {
+          const value = payload.elevation[index] ?? 0
+          index += 1
+          heights[y * samples + x] = value
+          minElevation = Math.min(minElevation, value)
+          maxElevation = Math.max(maxElevation, value)
+        }
+      }
+      done += 1
+      if (done % 8 === 0) await new Promise(resolve => setTimeout(resolve, 120)) // be nice to the free API
+    }
+  }
+
+  return {
+    sourceId: 'open-meteo-proxy',
+    zoom: 0,
+    tileCount: 0,
+    grid: {
+      columns: samples,
+      rows: samples,
+      heights,
+      minElevation,
+      maxElevation,
+      projection,
+    },
+  }
 }
