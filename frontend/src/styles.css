@@ -79,6 +79,7 @@ table { width:100%; border-collapse: collapse; font-size:11px; } th,td { padding
   position: fixed; left: 330px; right: 330px; bottom: 14px; z-index: 3;
   grid-template-columns: 1.35fr .9fr .75fr; pointer-events: auto;
 }
+.sandbox-root.fullscreen-map .sandbox-bottom .chart-wide { margin: 0 -14px; padding-left: 14px; padding-right: 14px; }
 .sandbox-root.fullscreen-map .sandbox-bottom.collapsed { transform: translateY(calc(100% + 20px)); opacity: 0; pointer-events: none; }
 .panel-toggle {
   position: absolute; top: 10px; z-index: 4; width: 26px; height: 26px;

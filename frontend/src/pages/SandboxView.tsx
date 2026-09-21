@@ -450,13 +450,13 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
         <button className="panel-toggle bottom-toggle" onClick={() => togglePanel('bottom')} aria-label="折叠底部图表">{collapsed.bottom ? '▲' : '▼'}</button>
         {collapsed.bottom ? null : (
         <>
-        <section className="glass-card">
+        <section className="glass-card chart-wide">
           <div className="card-head"><h2>出力趋势</h2><span>预测 vs 实际 · 24H</span></div>
-          <Chart height={126} option={trendOption} />
+          <Chart height={70} option={trendOption} />
         </section>
-        <section className="glass-card">
+        <section className="glass-card chart-wide">
           <div className="card-head"><h2>机舱功率分布</h2><span>MW / TURBINE</span></div>
-          <Chart height={126} option={distributionOption} />
+          <Chart height={70} option={distributionOption} />
         </section>
         <section className="glass-card events">
           <div className="card-head"><h2>运行事件</h2><span>{visibleAlerts.length} 待确认</span></div>
