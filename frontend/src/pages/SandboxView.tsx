@@ -252,9 +252,11 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   ]
   const visibleAlerts = (alerts.length ? alerts : fallbackAlerts).slice(0, 4)
   const selectedFarmName = farms.find(farm => farm.id === selectedFarmId)?.name ?? '未选择风场'
+  const [collapsed, setCollapsed] = useState({ left: false, right: false, bottom: false })
+  const togglePanel = (key: 'left' | 'right' | 'bottom') => setCollapsed(current => ({ ...current, [key]: !current[key] }))
 
   return (
-    <div className="sandbox-root">
+    <div className="sandbox-root fullscreen-map">
       <header className="sandbox-top">
         <div className="sandbox-identity">
           <i>WIND</i>
@@ -322,7 +324,12 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
       </div>
 
       <main className="sandbox-main">
-        <aside className="sandbox-column left">
+        <aside className={`sandbox-column left${collapsed.left ? ' collapsed' : ''}`}>
+          <button className="panel-toggle" onClick={() => togglePanel('left')} aria-label="折叠左侧面板">{collapsed.left ? '‹' : '‹'}</button>
+          {collapsed.left ? (
+            <div className="panel-collapsed-hint">气象 / 效能</div>
+          ) : (
+          <>
           <section className="glass-card">
             <div className="card-head"><h2>风场气象</h2><span>METEOROLOGY</span></div>
             <div className="weather">
@@ -356,9 +363,12 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
               <span>今日已发电 {(420 * planPercent / 100).toFixed(1)} MWh</span>
             </div>
           </section>
+          </>
+          )}
         </aside>
 
         <SandboxScene
+          style={{ position: 'fixed', inset: 0, zIndex: 1 }}
           turbines={turbines}
           selectedId={selectedId}
           onSelect={setSelectedId}
@@ -373,7 +383,12 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           onBasemapModeChange={setBasemapMode}
         />
 
-        <aside className="sandbox-column right">
+        <aside className={`sandbox-column right${collapsed.right ? ' collapsed' : ''}`}>
+          <button className="panel-toggle" onClick={() => togglePanel('right')} aria-label="折叠右侧面板">›</button>
+          {collapsed.right ? (
+            <div className="panel-collapsed-hint">状态 / 遥测</div>
+          ) : (
+          <>
           <section className="glass-card status-card">
             <div className="card-head"><h2>机组状态矩阵</h2><span>全部 {turbines.length} 台</span></div>
             <div className="status-legend"><i className="run" />运行 <i className="warn" />预警 <i className="fault" />故障</div>
@@ -426,10 +441,15 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
               定位机舱 ⟶
             </button>
           </section>
+          </>
+          )}
         </aside>
       </main>
 
-      <footer className="sandbox-bottom">
+      <footer className={`sandbox-bottom${collapsed.bottom ? ' collapsed' : ''}`}>
+        <button className="panel-toggle bottom-toggle" onClick={() => togglePanel('bottom')} aria-label="折叠底部图表">{collapsed.bottom ? '▲' : '▼'}</button>
+        {collapsed.bottom ? null : (
+        <>
         <section className="glass-card">
           <div className="card-head"><h2>出力趋势</h2><span>预测 vs 实际 · 24H</span></div>
           <Chart height={126} option={trendOption} />
@@ -450,6 +470,8 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
             ))}
           </div>
         </section>
+        </>
+        )}
       </footer>
       {terrainNotice && <div className="sandbox-toast">{terrainNotice}</div>}
       {loadError && <div className="sandbox-error">{loadError}</div>}

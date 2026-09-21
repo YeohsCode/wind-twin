@@ -94,7 +94,8 @@ export default function SandboxScene({
   onNightChange,
   onViewModeChange,
   onBasemapModeChange,
-}: Props) {
+  style,
+}: Props & { style?: React.CSSProperties }) {
   const mountRef = useRef<HTMLDivElement>(null)
   const dataRef = useRef(turbines)
   const turbineMapRef = useRef(new Map<string, THREE.Group>())
@@ -716,7 +717,7 @@ export default function SandboxScene({
   }, [selectedId])
 
   return (
-    <div className="sandbox-stage">
+    <div className="sandbox-stage" style={style}>
       <div ref={mountRef} className="sandbox-mount" />
       <div className="sandbox-brand">
         <strong>TERRAIN DIGITAL TWIN</strong>
