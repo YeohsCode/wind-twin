@@ -97,3 +97,19 @@ table { width:100%; border-collapse: collapse; font-size:11px; } th,td { padding
 }
 .sandbox-column.left .panel-collapsed-hint { left: 14px; }
 .sandbox-column.right .panel-collapsed-hint { right: 14px; }
+
+/* ---------------- level breadcrumbs + farm detail card ---------------- */
+.level-crumbs { position: fixed; z-index: 6; left: 18px; top: 112px; display: flex; align-items: center; gap: 8px; padding: 9px 14px; border: 1px solid rgba(56,189,248,.22); border-radius: 12px; background: rgba(3,12,22,.86); backdrop-filter: blur(18px); box-shadow: var(--shadow); }
+.level-crumbs span { color: #4b6f8f; }
+.level-crumbs button { height: 28px; padding: 0 12px; border: 1px solid rgba(56,189,248,.16); border-radius: 8px; background: rgba(6,18,31,.75); color: var(--muted); cursor: pointer; font-size: 12px; }
+.level-crumbs button.active { color: #04121e; background: linear-gradient(120deg,#67e8f9,#38bdf8); font-weight: 700; border-color: transparent; }
+.farm-detail-card { position: fixed; z-index: 6; right: 388px; bottom: 18px; width: 330px; padding: 18px; border: 1px solid rgba(125,243,196,.28); border-radius: 16px; background: linear-gradient(150deg, rgba(4,20,16,.92), rgba(2,10,12,.82)); backdrop-filter: blur(18px); box-shadow: var(--shadow); }
+.farm-detail-head { display: flex; justify-content: space-between; align-items: start; margin-bottom: 12px; }
+.farm-detail-head small { color: var(--muted); font-size: 10px; letter-spacing: 1.5px; }
+.farm-detail-head h3 { margin: 4px 0 0; font-size: 16px; color: #e0fff4; }
+.farm-detail-head button { width: 28px; height: 28px; border: 0; border-radius: 50%; background: rgba(148,163,184,.14); color: #94a3b8; cursor: pointer; font-size: 16px; }
+.farm-detail-card .detail-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 10px; }
+.farm-detail-card .detail-grid span { display: block; margin-bottom: 3px; font-size: 10px; color: var(--muted); }
+.farm-detail-card .detail-grid b { font-size: 14px; color: #d9fff1; }
+.farm-detail-card .detail-grid b.ok { color: #67e8a5; }
+.farm-detail-card .detail-grid b.warn-text { color: #ffb86b; }

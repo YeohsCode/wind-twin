@@ -23,6 +23,7 @@ export default function GisView() {
   const [layers, setLayers] = useState({ ...ALL_LAYERS })
   const [filters, setFilters] = useState<any>({})
   const [focusRegion, setFocusRegion] = useState<string | null>(null)
+  const [focusFarm, setFocusFarm] = useState<string | null>(null)
   const [selectedTurbine, setSelectedTurbine] = useState<Turbine | null>(null)
   const [turbineHistory, setTurbineHistory] = useState<TurbineHistory | null>(null)
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
@@ -72,19 +73,30 @@ export default function GisView() {
   }, [selectedTurbine])
 
   const activePlan = useMemo(() => plans.find(plan => plan.plan_key === activePlanKey) ?? null, [plans, activePlanKey])
+  const selectedFarm = useMemo(() => farms.find(f => f.id === focusFarm) ?? null, [farms, focusFarm])
+  const provinceFarms = useMemo(() => focusRegion ? farms.filter(f => f.region_id === focusRegion) : farms, [farms, focusRegion])
+  const scopedFarmIds = useMemo(() => new Set(provinceFarms.map(f => f.id)), [provinceFarms])
+  const level: 'country' | 'province' | 'farm' = focusFarm ? 'farm' : focusRegion ? 'province' : 'country'
+  const farmLivePower = useMemo(() => focusFarm
+    ? allTurbines.filter(t => t.wind_farm_id === focusFarm).reduce((sum, t) => sum + (t.operation?.power_kw ?? 0), 0) / 1000
+    : 0, [allTurbines, focusFarm])
   const filteredTurbines = useMemo(() => allTurbines.filter(t => {
+    if (focusFarm && t.wind_farm_id !== focusFarm) return false
+    if (!focusFarm && !focusRegion && false) return false
     if (filters.regionId && t.regionId !== filters.regionId) return false
     if (filters.status && t.status !== filters.status) return false
     if (filters.onlyAlert && !alerts.some(a => a.source_id === t.id)) return false
     return true
-  }), [allTurbines, filters, alerts])
+  }), [allTurbines, filters, alerts, focusFarm])
 
   const filteredProjects = useMemo(() => projects.filter(p => {
+    if (level === 'farm') return false
+    if (level === 'province' && !scopedFarmIds.has(p.region_id) && p.region_id !== focusRegion) return false
     if (filters.regionId && p.region_id !== filters.regionId) return false
     if (filters.minCapacity && p.capacity_mw < filters.minCapacity) return false
     if (filters.status && p.status !== filters.status) return false
     return true
-  }), [projects, filters])
+  }), [projects, filters, level, focusRegion, scopedFarmIds])
 
   const visibleRoutes = useMemo(() => {
     if (!activePlan) return routes
@@ -97,6 +109,17 @@ export default function GisView() {
   const planA = plans.find(p => p.plan_key === 'A')
   const planB = plans.find(p => p.plan_key === 'B')
   const planC = plans.find(p => p.plan_key === 'C')
+
+  const drillRegion = (id: string) => {
+    const region = regions.find(r => r.id === id)
+    if (!region) return
+    if (region.level === 'province') setFocusRegion(id)
+  }
+  const drillFarm = (id: string) => setFocusFarm(id)
+  const breadcrumbTo = (target: 'country' | 'province' | 'farm') => {
+    if (target === 'country') { setFocusFarm(null); setFocusRegion(null) }
+    else if (target === 'province') setFocusFarm(null)
+  }
 
   const applyActions = (actions: SceneAction[]) => {
     for (const action of actions) {
@@ -154,8 +177,16 @@ export default function GisView() {
         regions={regions} farms={farms} turbines={layers.turbines ? filteredTurbines : []}
         factories={factories} projects={filteredProjects} substations={substations}
         routes={visibleRoutes} alerts={alerts} activePlan={activePlan} layers={layers} period={period}
-        focusRegion={focusRegion} onSelectTurbine={setSelectedTurbine} onSelectProject={setSelectedProject}
+        focusRegion={focusRegion} focusFarm={focusFarm}
+        onSelectTurbine={setSelectedTurbine} onSelectProject={setSelectedProject}
+        onSelectRegion={drillRegion} onSelectFarm={drillFarm}
       />
+
+      <div className="level-crumbs">
+        <button className={!focusRegion && !focusFarm ? 'active' : ''} onClick={() => breadcrumbTo('country')}>中国</button>
+        {focusRegion && <><span>›</span><button className={!focusFarm ? 'active' : ''} onClick={() => breadcrumbTo('province')}>{regions.find(r => r.id === focusRegion)?.name}</button></>}
+        {focusFarm && <><span>›</span><button className="active">{selectedFarm?.name}</button></>}
+      </div>
 
       <header className="topbar">
         <div className="brand"><span>WIND TWIN</span><small>风电规划数字孪生</small></div>
@@ -236,6 +267,23 @@ export default function GisView() {
           }} height={190} />
         </section>
       </aside>
+
+      {selectedFarm && (
+        <div className="farm-detail-card">
+          <div className="farm-detail-head">
+            <div><small>{regions.find(r => r.id === selectedFarm.region_id)?.name ?? selectedFarm.region_id}</small><h3>{selectedFarm.name}</h3></div>
+            <button onClick={() => setFocusFarm(null)}>×</button>
+          </div>
+          <div className="detail-grid">
+            <div><span>装机容量</span><b>{selectedFarm.capacityMw.toFixed(1)} MW</b></div>
+            <div><span>机组数量</span><b>{selectedFarm.turbineCount} 台</b></div>
+            <div><span>实时功率</span><b>{farmLivePower.toFixed(2)} MW</b></div>
+            <div><span>海拔</span><b>{selectedFarm.elevation_m} m</b></div>
+            <div><span>运行</span><b className="ok">{selectedFarm.statusCounts.running ?? 0}</b></div>
+            <div><span>预警 / 故障</span><b className="warn-text">{selectedFarm.statusCounts.warning ?? 0} / {selectedFarm.statusCounts.fault ?? 0}</b></div>
+          </div>
+        </div>
+      )}
 
       {selectedTurbine && (
         <div className="detail-modal" onClick={() => setSelectedTurbine(null)}>

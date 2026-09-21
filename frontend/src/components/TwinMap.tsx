@@ -9,8 +9,9 @@ type Layers = Record<string, boolean>
 type Props = {
   regions: Region[]; farms: WindFarm[]; turbines: Turbine[]; factories: Factory[]; projects: Project[]
   substations: Substation[]; routes: Route[]; alerts: Alert[]; activePlan: Plan | null
-  layers: Layers; period: string; focusRegion: string | null
+  layers: Layers; period: string; focusRegion: string | null; focusFarm: string | null
   onSelectTurbine: (t: Turbine) => void; onSelectProject: (p: Project) => void
+  onSelectRegion: (id: string) => void; onSelectFarm: (id: string) => void
 }
 
 const emptyFC = { type: 'FeatureCollection' as const, features: [] }
@@ -74,6 +75,7 @@ export default function TwinMap(props: Props) {
       maxPitch: 80, attributionControl: { compact: true },
     })
     mapRef.current = map
+    ;(window as any).__map = map
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right')
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120 }), 'bottom-left')
     map.on('style.load', () => {
@@ -88,7 +90,8 @@ export default function TwinMap(props: Props) {
           'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.82, 0.58],
         } },
         { id: 'region-line', type: 'line', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'line-color': 'rgba(125,211,252,.82)', 'line-width': ['case', ['boolean', ['get', 'selected'], false], 3.2, 1.4] } },
-        { id: 'farm-line', type: 'line', source: 'farms', paint: { 'line-color': 'rgba(56,189,248,.72)', 'line-width': 1.6, 'line-dasharray': [2, 1.5] } },
+        { id: 'farm-line', type: 'line', source: 'farms', paint: { 'line-color': ['case', ['boolean', ['get', 'selected'], false], '#7df3c4', 'rgba(56,189,248,.72)'], 'line-width': ['case', ['boolean', ['get', 'selected'], false], 4, 1.6], 'line-dasharray': [2, 1.5] } },
+        { id: 'farm-hit', type: 'fill', source: 'farms', paint: { 'fill-color': '#7df3c4', 'fill-opacity': 0.001 } },
         { id: 'route-glow', type: 'line', source: 'routes', paint: { 'line-color': ['get', 'color'], 'line-width': 7, 'line-opacity': 0.14, 'line-blur': 3 } },
         { id: 'route-line', type: 'line', source: 'routes', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['boolean', ['get', 'active'], false], 3.4, 1.2], 'line-opacity': ['case', ['boolean', ['get', 'active'], false], 0.95, 0.32], 'line-dasharray': [1.2, 1.5] } },
         { id: 'project-bars', type: 'fill-extrusion', source: 'projects', paint: { 'fill-extrusion-color': ['get', 'color'], 'fill-extrusion-height': ['get', 'height'], 'fill-extrusion-base': 1620, 'fill-extrusion-opacity': 0.82 } },
@@ -107,8 +110,9 @@ export default function TwinMap(props: Props) {
     })
 
     map.on('click', event => {
+      const farmHitsFirst = map.queryRenderedFeatures(event.point, { layers: ['farm-hit'] })
       const hits = map.queryRenderedFeatures(event.point, { layers: ['turbine-hit'] })
-      if (hits.length) {
+      if (hits.length && !farmHitsFirst.length) {
         const turbine = clickHandlers.current.turbines.find(t => t.id === hits[0].properties?.id)
         if (turbine) { clickHandlers.current.onSelectTurbine(turbine); return }
       }
@@ -116,6 +120,16 @@ export default function TwinMap(props: Props) {
       if (bars.length) {
         const project = clickHandlers.current.projects.find(p => p.id === bars[0].properties?.id)
         if (project) clickHandlers.current.onSelectProject(project)
+        return
+      }
+      const farmHits = map.queryRenderedFeatures(event.point, { layers: ['farm-hit', 'farm-point'] })
+      if (farmHits.length && farmHits[0].properties?.id) {
+        clickHandlers.current.onSelectFarm(farmHits[0].properties.id as string)
+        return
+      }
+      const regionHits = map.queryRenderedFeatures(event.point, { layers: ['region-heat', 'region-fill'] })
+      if (regionHits.length && regionHits[0].properties?.id) {
+        clickHandlers.current.onSelectRegion(regionHits[0].properties.id as string)
         return
       }
       const factoryHits = map.queryRenderedFeatures(event.point, { layers: ['factory-point'] })
@@ -149,7 +163,10 @@ export default function TwinMap(props: Props) {
         geometry: { type: 'Polygon', coordinates: [ring(region.boundary)] },
       })),
     })
-    source('farms', { type: 'FeatureCollection', features: props.farms.map(f => ({ type: 'Feature', properties: { id: f.id }, geometry: { type: 'Polygon', coordinates: [ring(f.boundary)] } })) })
+    source('farms', { type: 'FeatureCollection', features: props.farms.map(f => ({
+      type: 'Feature', properties: { id: f.id, name: f.name, selected: f.id === props.focusFarm },
+      geometry: { type: 'Polygon', coordinates: [ring(f.boundary)] },
+    })) })
     source('farmPoints', { type: 'FeatureCollection', features: props.farms.map(f => ({ type: 'Feature', properties: { id: f.id }, geometry: { type: 'Point', coordinates: [f.lng, f.lat] } })) })
     source('factories', { type: 'FeatureCollection', features: props.factories.map(f => ({ type: 'Feature', properties: { id: f.id, color: FACTORY_COLORS[f.id] ?? '#38bdf8' }, geometry: { type: 'Point', coordinates: [f.lng, f.lat] } })) })
     source('substations', { type: 'FeatureCollection', features: props.substations.map(s => ({ type: 'Feature', properties: { id: s.id }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } })) })
@@ -223,10 +240,21 @@ export default function TwinMap(props: Props) {
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !props.focusRegion) return
-    const region = props.regions.find(r => r.id === props.focusRegion)
-    if (region) map.flyTo({ center: [region.center_lng, region.center_lat], zoom: 6.4, pitch: 62, duration: 1600 })
-  }, [props.focusRegion, props.regions])
+    if (!map || !readyRef.current) return
+    if (props.focusFarm) {
+      const farm = props.farms.find(f => f.id === props.focusFarm)
+      if (farm) { map.flyTo({ center: [farm.lng, farm.lat], zoom: 10.8, pitch: 58, duration: 1700 }); return }
+    }
+    if (props.focusRegion) {
+      const region = props.regions.find(r => r.id === props.focusRegion)
+      if (region) { map.flyTo({ center: [region.center_lng, region.center_lat], zoom: 6.6, pitch: 58, duration: 1600 }); return }
+    }
+    const country = props.regions.find(r => r.level === 'country')
+    if (country) {
+      const b = ll(country.boundary)
+      map.fitBounds([[b[0][0], b[0][1]], [b[2][0], b[2][1]]], { padding: 220, pitch: 52, duration: 1600 })
+    }
+  }, [props.focusRegion, props.focusFarm, props.farms, props.regions])
 
   return <div ref={containerRef} className="map-root" />
 }
