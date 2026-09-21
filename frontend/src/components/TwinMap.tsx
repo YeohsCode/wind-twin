@@ -39,7 +39,7 @@ function makeStyle(): StyleSpecification {
       },
     },
     layers: [
-      { id: 'base', type: 'background', paint: { 'background-color': '#04101d' } },
+      { id: 'base', type: 'background', paint: { 'background-color': '#0a1520' } },
       { id: 'satellite', type: 'raster', source: 'satellite', paint: { 'raster-opacity': 0.92, 'raster-saturation': 0.55, 'raster-contrast': 0.08 } },
       { id: 'water-fill', type: 'fill', source: 'openmap', 'source-layer': 'water', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': 'rgba(12,74,110,.72)', 'fill-outline-color': 'rgba(56,189,248,.35)' } },
       { id: 'waterway', type: 'line', source: 'openmap', 'source-layer': 'waterway', paint: { 'line-color': 'rgba(14,116,144,.75)', 'line-width': 1.2 } },
@@ -80,6 +80,15 @@ export default function TwinMap(props: Props) {
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120 }), 'bottom-left')
     map.on('style.load', () => {
       readyRef.current = true
+      map.setSky({
+        'sky-color': 'rgba(10,21,32,0.95)',
+        'horizon-color': 'rgba(18,32,46,0.9)',
+        'fog-color': 'rgba(8,18,28,0.9)',
+        'fog-ground-blend': 0.55,
+        'horizon-fog-blend': 0.4,
+        'sky-horizon-blend': 0.5,
+        'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 6, 0.35, 10, 0.12],
+      })
       map.setTerrain({ source: 'terrain', exaggeration: 1.25 })
       const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits']
       geoSources.forEach(id => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: emptyFC }) })

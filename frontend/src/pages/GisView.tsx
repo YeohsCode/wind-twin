@@ -35,6 +35,8 @@ export default function GisView() {
   const [question, setQuestion] = useState('分析华北未来三年风电项目需求和产能匹配情况')
   const [busy, setBusy] = useState('')
   const [toast, setToast] = useState('')
+  const [collapsed, setCollapsed] = useState({ left: false, right: false })
+  const togglePanel = (key: 'left' | 'right') => setCollapsed(current => ({ ...current, [key]: !current[key] }))
 
   useEffect(() => {
     let mounted = true
@@ -202,7 +204,12 @@ export default function GisView() {
         </div>
       </header>
 
-      <aside className="panel left">
+      <aside className={`panel left${collapsed.left ? ' collapsed' : ''}`}>
+        <button className="panel-toggle" onClick={() => togglePanel('left')} aria-label="折叠左侧面板">‹</button>
+        {collapsed.left ? (
+          <button className="panel-collapsed-hint" onClick={() => togglePanel('left')}>图层 / 沙盘 / 对比</button>
+        ) : (
+        <>
         <section>
           <h2>图层控制</h2>
           <div className="layer-grid">
@@ -249,9 +256,16 @@ export default function GisView() {
             ))}
           </tbody></table>
         </section>
+        </>
+        )}
       </aside>
 
-      <aside className="panel right">
+      <aside className={`panel right${collapsed.right ? ' collapsed' : ''}`}>
+        <button className="panel-toggle" onClick={() => togglePanel('right')} aria-label="折叠右侧面板">›</button>
+        {collapsed.right ? (
+          <button className="panel-collapsed-hint" onClick={() => togglePanel('right')}>分析 / 产能</button>
+        ) : (
+        <>
         <section>
           <h2>AI 场景分析</h2>
           <textarea value={question} onChange={e => setQuestion(e.target.value)} rows={3} />
@@ -266,6 +280,8 @@ export default function GisView() {
             yAxis: { type: 'value' }, series: [{ type: 'bar', barWidth: 24, data: factories.map(f => f.annual_capacity_mw), itemStyle: { color: '#38bdf8' } }],
           }} height={190} />
         </section>
+        </>
+        )}
       </aside>
 
       {selectedFarm && (
