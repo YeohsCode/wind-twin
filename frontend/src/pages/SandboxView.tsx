@@ -9,6 +9,7 @@ import type { Alert, MapFeatureCollection, Turbine, WindFarm } from '../types'
 type ViewMode = 'overview' | 'top' | 'side' | 'orbit'
 type BaseTurbine = Turbine & { x: number; z: number }
 type FarmOption = Pick<WindFarm, 'id' | 'name' | 'turbineCount'> & { lat: number; lng: number }
+const DEFAULT_PERIOD = '2027-Q3'
 
 function phase(id: string) {
   let value = 0
@@ -24,6 +25,7 @@ function projectTurbines(turbines: Turbine[]): BaseTurbine[] {
 function liveTurbine(turbine: BaseTurbine, index: number, seconds: number): SceneTurbine {
   const seed = phase(turbine.id) + index * 0.173
   const operationPower = turbine.operation?.power_kw ?? turbine.rated_power_kw * 0.74
+  const operationWindSpeed = turbine.operation?.wind_speed ?? 8.2
   const wave = 0.82 + 0.14 * Math.sin(seconds * 0.16 + seed * 6.283) + 0.05 * Math.sin(seconds * 0.43 + seed * 12)
   const statusFactor = turbine.status === 'fault' ? 0.05 : turbine.status === 'warning' ? 0.58 : 1
   const powerKw = operationPower * wave * statusFactor
@@ -33,7 +35,7 @@ function liveTurbine(turbine: BaseTurbine, index: number, seconds: number): Scen
     status: turbine.status,
     ratedPowerKw: turbine.rated_power_kw,
     liveMw: Math.max(0, powerKw / 1000),
-    windSpeed: 6.1 + 2.3 * Math.sin(seconds * 0.08 + seed * 4) + seed * 1.4,
+    windSpeed: Math.max(2.2, operationWindSpeed + 0.45 * Math.sin(seconds * 0.08 + seed * 4)),
     rotorRpm: turbine.status === 'fault' ? 0 : 8.2 + 4.6 * Math.max(0, powerKw / turbine.rated_power_kw),
     lat: turbine.lat,
     lng: turbine.lng,
@@ -46,8 +48,10 @@ const STATUS_TEXT = { running: '运行', warning: '预警', fault: '故障' } as
 
 export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandbox' | 'gis') => void }) {
   const [farms, setFarms] = useState<FarmOption[]>([])
-  const [turbinesByFarm, setTurbinesByFarm] = useState<Map<string, Turbine[]>>(new Map())
   const [baseTurbines, setBaseTurbines] = useState<BaseTurbine[]>([])
+  const [periods, setPeriods] = useState<string[]>([])
+  const [period, setPeriod] = useState(DEFAULT_PERIOD)
+  const [periodLoading, setPeriodLoading] = useState(true)
   const [selectedFarmId, setSelectedFarmId] = useState('')
   const [alerts, setAlerts] = useState<Alert[]>([])
   const [loadError, setLoadError] = useState('')
@@ -65,8 +69,9 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   const [terrainNotice, setTerrainNotice] = useState('')
   const demAbortRef = useRef<AbortController | null>(null)
   const terrainVersionRef = useRef(0)
+  const periodRequestRef = useRef(0)
 
-  const showFarm = useCallback(async (farmId: string, farmTurbines: Turbine[]) => {
+  const showFarm = useCallback(async (farmId: string, farmTurbines: Turbine[], periodValue: string) => {
     demAbortRef.current?.abort()
     const controller = new AbortController()
     demAbortRef.current = controller
@@ -82,7 +87,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     setTerrainState({ version: terrainVersionRef.current, status: 'loading', sourceText: `${farmId.toUpperCase()} · LOADING DEM` })
     setTerrainVersion(terrainVersionRef.current)
     try {
-      const result = await loadDemCached(farmTurbines, `${farmId}:2027-Q3`, controller.signal)
+      const result = await loadDemCached(farmTurbines, `${farmId}:${periodValue}`, controller.signal)
       if (controller.signal.aborted) return
       const gridProjection = result.grid.projection
       const projectedForGrid = projected.map(turbine => ({
@@ -123,32 +128,25 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   useEffect(() => {
     let mounted = true
     async function load() {
-      const [farmRows, allTurbines, alertRows] = await Promise.all([
+      const [overview, farmRows, alertRows] = await Promise.all([
+        api.overview(),
         api.windFarms(),
-        api.turbines('2027-Q3'),
         api.alerts(),
       ])
       if (!mounted) return
-      const grouped = new Map<string, Turbine[]>()
-      allTurbines.forEach(turbine => {
-        const group = grouped.get(turbine.wind_farm_id) ?? []
-        group.push(turbine)
-        grouped.set(turbine.wind_farm_id, group)
-      })
       const options: FarmOption[] = farmRows
-        .filter(farm => grouped.has(farm.id))
         .map(farm => ({
           id: farm.id,
           name: farm.name,
           lat: farm.lat,
           lng: farm.lng,
-          turbineCount: grouped.get(farm.id)?.length ?? farm.turbineCount,
+          turbineCount: farm.turbineCount,
         }))
       setFarms(options)
-      setTurbinesByFarm(grouped)
       setAlerts(alertRows)
-      const initialId = options.find(farm => farm.id === 'wf-hohhot')?.id ?? options[0]?.id
-      if (initialId) await showFarm(initialId, grouped.get(initialId) ?? [])
+      setPeriods(overview.periods ?? [])
+      const initialId = options.find(farm => farm.id === 'wf-nayong')?.id ?? options[0]?.id
+      if (initialId) setSelectedFarmId(initialId)
     }
     load().catch(() => setLoadError('后端服务未连接，正在使用沙盘演示数据'))
     return () => {
@@ -158,6 +156,24 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     // Load the master data once; farm changes are handled by showFarm.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  useEffect(() => {
+    if (!selectedFarmId || !periods.length) return
+    const requestNonce = ++periodRequestRef.current
+    setPeriodLoading(true)
+    api.turbines(period, selectedFarmId)
+      .then(async farmTurbines => {
+        if (requestNonce !== periodRequestRef.current) return
+        await showFarm(selectedFarmId, farmTurbines, period)
+        if (requestNonce === periodRequestRef.current) setPeriodLoading(false)
+      })
+      .catch(() => {
+        if (requestNonce === periodRequestRef.current) {
+          setPeriodLoading(false)
+          setLoadError('时间断面加载失败，请检查后端服务')
+        }
+      })
+  }, [period, periods.length, selectedFarmId, showFarm])
 
   useEffect(() => {
     if (!terrainNotice) return
@@ -258,10 +274,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
             <span>风场</span>
             <select
               value={selectedFarmId}
-              onChange={event => {
-                const farmId = event.target.value
-                void showFarm(farmId, turbinesByFarm.get(farmId) ?? [])
-              }}
+              onChange={event => setSelectedFarmId(event.target.value)}
             >
               {farms.map(farm => (
                 <option key={farm.id} value={farm.id}>{farm.name} · {farm.turbineCount}台</option>
@@ -271,7 +284,17 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
         </div>
         <div className="sandbox-clock">
           <span>{selectedFarmName}</span>
-          <b>{new Date(tick).toLocaleTimeString('zh-CN', { hour12: false })}</b>
+          <div className="sandbox-timeline">
+            <input
+              aria-label="时间轴"
+              type="range"
+              min={0}
+              max={Math.max(0, periods.length - 1)}
+              value={Math.max(0, periods.indexOf(period))}
+              onChange={event => setPeriod(periods[Number(event.target.value)])}
+            />
+            <b>{periodLoading ? 'SYNC…' : period}</b>
+          </div>
         </div>
       </header>
 
@@ -279,7 +302,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
         <div className="kpi-card accent">
           <small>全场实时功率</small>
           <strong>{totalPower.toFixed(2)}<em>MW</em></strong>
-          <span>装机 {installedCapacity.toFixed(1)} MW · 后端基线波形推演</span>
+          <span>装机 {installedCapacity.toFixed(1)} MW · {period} 后端数据驱动</span>
         </div>
         <div className="kpi-card">
           <small>当日累计发电</small>

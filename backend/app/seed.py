@@ -38,7 +38,7 @@ NAYONG_TURBINES = [
     (26.78658, 105.20364), (26.77510, 105.21548), (26.76584, 105.21922),
     (26.75061, 105.21817), (26.75276, 105.23594), (26.75035, 105.24711),
     (26.74127, 105.26154), (26.75509, 105.26914), (26.76173, 105.27762),
-    (26.76703, 105.29445),
+    (26.76703, 105.29445), (26.77580, 105.29150),
 ]
 
 SUBSTATIONS = [
@@ -86,6 +86,36 @@ def run_seed(force: bool = False) -> int:
     Base.metadata.create_all(engine)
     with SessionLocal() as db:
         if not force and db.query(Region).count():
+            expected_ids = [f"wf-nayong-T{i + 1:02d}" for i in range(len(NAYONG_TURBINES))]
+            nayong_rows = db.query(Turbine).filter(Turbine.id.in_(expected_ids)).all()
+            expected_specs = {(5560 if turbine_id == expected_ids[-1] else 5000) for turbine_id in expected_ids}
+            if len(nayong_rows) != len(expected_ids) or {row.rated_power_kw for row in nayong_rows} != expected_specs:
+                db.query(OperationData).filter(OperationData.turbine_id.in_(expected_ids)).delete(synchronize_session=False)
+                db.query(Turbine).filter(Turbine.id.in_(expected_ids)).delete(synchronize_session=False)
+                db.expunge_all()
+                db.flush()
+                for i in range(len(NAYONG_TURBINES)):
+                    last = i == len(NAYONG_TURBINES) - 1
+                    db.add(Turbine(
+                        id=expected_ids[i], wind_farm_id="wf-nayong", name=f"纳雍-{i + 1:02d}",
+                        lat=NAYONG_TURBINES[i][0], lng=NAYONG_TURBINES[i][1],
+                        model="WT-5560" if last else "WT-5000",
+                        rated_power_kw=5560 if last else 5000, status="running",
+                        height_m=160,
+                    ))
+                    for period_index, period in enumerate(PERIODS):
+                        factor = [0.58, 0.72, 0.84, 0.68, 0.62, 0.76, 0.88, 0.72,
+                                  0.66, 0.80, 0.90, 0.76, 0.70, 0.83, 0.93, 0.79,
+                                  0.74, 0.86, 0.95, 0.82][period_index]
+                        seed_value = (hash(expected_ids[i] + period) % 1000) / 1000
+                        rated_power_kw = 5560 if last else 5000
+                        db.add(OperationData(
+                            turbine_id=expected_ids[i], period=period,
+                            power_kw=round(rated_power_kw * factor * (0.82 + seed_value * 0.35), 1),
+                            wind_speed=round(5.4 + factor * 4.4 + seed_value, 2),
+                            availability=round(0.74 + factor * 0.24, 3), status="running",
+                        ))
+                db.commit()
             return db.query(Turbine).count()
         if force:
             for table in reversed(Base.metadata.sorted_tables):
@@ -98,13 +128,13 @@ def run_seed(force: bool = False) -> int:
             db.add(WindFarm(id=fid, name=name, region_id=rid, lat=lat, lng=lng, elevation_m=elev,
                             boundary=square(lat, lng, 0.18), commissioned_on=date(2018 + (rng % 5), 6, 15)))
             if fid == "wf-nayong":
-                for i, (tlat, tlng) in enumerate(NAYONG_TURBINES):
+                for i in range(len(NAYONG_TURBINES)):
                     rng = (rng * 1103515245 + 12345) % 2147483648
                     status = "warning" if rng % 29 == 0 else ("fault" if rng % 47 == 0 else "running")
                     last = i == len(NAYONG_TURBINES) - 1
                     db.add(Turbine(
                         id=f"{fid}-T{i + 1:02d}", wind_farm_id=fid, name=f"纳雍-{i + 1:02d}",
-                        lat=tlat, lng=tlng,
+                        lat=NAYONG_TURBINES[i][0], lng=NAYONG_TURBINES[i][1],
                         model="WT-5560" if last else "WT-5000",
                         rated_power_kw=5560 if last else 5000, status=status,
                         height_m=160,

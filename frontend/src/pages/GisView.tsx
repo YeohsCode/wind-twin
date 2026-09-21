@@ -3,9 +3,11 @@ import TwinMap from '../components/TwinMap'
 import Chart from '../components/Chart'
 import { api } from '../api'
 import type { AIResult, Alert, Factory, Plan, Project, Region, Route, SceneAction, Substation, Turbine, WindFarm } from '../types'
+import type { TurbineHistory } from '../api'
 
-const ALL_LAYERS = { regions: true, windFarms: true, turbines: true, projects: true, factories: true, substations: true, routes: true, alerts: true }
+const ALL_LAYERS = { regions: true, heat: true, windFarms: true, turbines: true, projects: true, factories: true, substations: true, routes: true, alerts: true }
 const DEFAULT_PERIOD = '2027-Q3'
+const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
 
 export default function GisView() {
   const [overview, setOverview] = useState<any>(null)
@@ -22,6 +24,7 @@ export default function GisView() {
   const [filters, setFilters] = useState<any>({})
   const [focusRegion, setFocusRegion] = useState<string | null>(null)
   const [selectedTurbine, setSelectedTurbine] = useState<Turbine | null>(null)
+  const [turbineHistory, setTurbineHistory] = useState<TurbineHistory | null>(null)
   const [selectedProject, setSelectedProject] = useState<Project | null>(null)
   const [scenario, setScenario] = useState({ name: '华北 2027—2029', region_id: 'north-china', start_year: 2027, end_year: 2029, demand_mw: 1200, objective: 'balanced' })
   const [activeScenarioId, setActiveScenarioId] = useState<number | null>(null)
@@ -54,6 +57,19 @@ export default function GisView() {
     setAllTurbines(turbines)
     setBusy('')
   }, [])
+
+  useEffect(() => {
+    if (!selectedTurbine) {
+      setTurbineHistory(null)
+      return
+    }
+    let mounted = true
+    setTurbineHistory(null)
+    api.turbineHistory(selectedTurbine.id)
+      .then(result => { if (mounted) setTurbineHistory(result) })
+      .catch(() => { if (mounted) setTurbineHistory(null) })
+    return () => { mounted = false }
+  }, [selectedTurbine])
 
   const activePlan = useMemo(() => plans.find(plan => plan.plan_key === activePlanKey) ?? null, [plans, activePlanKey])
   const filteredTurbines = useMemo(() => allTurbines.filter(t => {
@@ -161,7 +177,7 @@ export default function GisView() {
           <div className="layer-grid">
             {Object.entries(layers).map(([key, value]) => (
               <button key={key} className={value ? 'active' : ''} onClick={() => setLayers(current => ({ ...current, [key]: !value }))}>
-                {{ regions: '行政区', windFarms: '风场', turbines: '风机', projects: '项目', factories: '工厂', substations: '升压站', routes: '物流', alerts: '告警' }[key]}
+                {{ regions: '行政区', heat: '区域热力', windFarms: '风场', turbines: '风机', projects: '项目', factories: '工厂', substations: '升压站', routes: '物流', alerts: '告警' }[key]}
               </button>
             ))}
           </div>
@@ -234,8 +250,25 @@ export default function GisView() {
               <div><span>额定</span><b>{selectedTurbine.rated_power_kw} kW</b></div>
             </div>
             <Chart option={{
-              backgroundColor: 'transparent', series: [{ type: 'gauge', min: 0, max: selectedTurbine.rated_power_kw, detail: { formatter: '{value} kW', color: '#7dd3fc' }, data: [{ value: Math.round(selectedTurbine.operation?.power_kw ?? 0), name: '功率' }] }],
+              backgroundColor: 'transparent',
+              tooltip: { trigger: 'axis' },
+              grid: { left: 46, right: 18, top: 28, bottom: 28 },
+              xAxis: { type: 'category', data: (turbineHistory?.operations ?? []).map(item => item.period) },
+              yAxis: { type: 'value', name: 'MW' },
+              series: [{
+                name: '功率曲线', type: 'line', smooth: true, areaStyle: { color: 'rgba(56,189,248,.16)' },
+                data: (turbineHistory?.operations ?? []).map(item => Number((item.power_kw / 1000).toFixed(2))),
+              }],
             }} height={190} />
+            <div className="detail-alerts">
+              {(turbineHistory?.alerts ?? []).map(alert => (
+                <article key={alert.id}>
+                  <i className={alert.level === 'critical' ? 'fault' : 'warn'} />
+                  <div><b>{alert.title}</b><span>{alert.detail}</span></div>
+                </article>
+              ))}
+              {!turbineHistory?.alerts?.length && <p className="empty">当前周期无未消除告警</p>}
+            </div>
           </div>
         </div>
       )}

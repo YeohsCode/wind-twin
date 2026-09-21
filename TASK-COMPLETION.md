@@ -1,0 +1,53 @@
+# PRD §8 MVP 完成度对照
+
+审计日期：2026-09-21。状态定义：**已满足** 表示有可运行路径和可验证数据；**已收口** 表示本次补齐后满足。
+
+## 3D 数字孪生
+
+| 验收项 | 状态 | 实现与验证 |
+|---|---|---|
+| 真实 DEM 地形 | 已满足 | three.js 沙盘读取 Terrarium DEM；单瓦片失败时可退到公共 fallback，API 代理兜底后仍有程序地形。 |
+| 行政区 | 已满足 | GIS 视图渲染业务行政区，并叠加 OpenFreeMap/OSM 行政边界。 |
+| 风场边界 | 已满足 | 9 个风场多边形来自后端 `wind_farms.boundary`。 |
+| 100+ 风机 | 已满足 | 修复纳雍 T20 后共 164 台：8 个华北场各 18 台 + 纳雍 20 台。 |
+| 风机 3D 模型 | 已满足 | 沙盘 three.js 机组与 GIS MapLibre custom layer 均渲染塔筒、机舱和旋转叶片。 |
+| 风机状态 | 已满足 | 所选 `period` 的 `OperationData.status` 会覆盖机组基础状态并驱动场景颜色。 |
+| 风机数据面板 | 已满足 | GIS 点击弹窗含遥测、20 季度功率曲线和未消除告警；沙盘右侧面板随周期与选中机变化。 |
+| 图层控制 | 已满足 | GIS 提供 9 类开关：行政区、区域热力、风场、风机、项目、工厂、升压站、物流、告警。 |
+| 时间轴 | 已满足 | GIS 和 3D 沙盘均可拖动 2025Q1—2029Q4；沙盘重新拉取风场断面、刷新 DEM cache key 和全部派生指标。 |
+
+## 规划沙盘
+
+| 验收项 | 状态 | 实现与验证 |
+|---|---|---|
+| 创建 Scenario | 已满足 | `POST /api/scenarios` 持久化名称、区域、周期、需求和目标。 |
+| 配置规划条件 | 已满足 | GIS 表单可配置名称、周期、需求 MW 和目标。 |
+| 调用规划算法 | 已满足 | `POST /api/scenarios/{id}/plan` 执行确定性启发式规划。 |
+| 保存规划结果 | 已满足 | Plan A/B/C 全量结果与指标写入 `planning_results`。 |
+| Plan A/B/C 对比 | 已满足 | 对比表显示分配、运距、风险、得分，并支持切换当前方案。 |
+| 3D 展示规划结果 | 已满足 | 项目柱体颜色跟随工厂分配，物流路线过滤到当前方案并高亮流动。 |
+
+## AI 场景链路
+
+| 验收项 | 状态 | 实现与验证 |
+|---|---|---|
+| 自然语言查询 | 已满足 | “只显示容量超过500MW的项目”返回 `SET_FILTER.minCapacity=500` 并过滤 GIS projects。 |
+| 自动数据分析 | 已满足 | 规则引擎聚合需求、产能、项目与状态上下文；标准 chat completion 协议可增强叙述。 |
+| 自动生成 3D 分析场景 | 已满足 | 返回 `SET_FILTER`、`SHOW_LAYERS`、`FOCUS_REGION`、`HIGHLIGHT_ALERTS`、`COMPARE_PLANS` 并直接应用到视图。 |
+| 自动生成图表 | 已满足 | 接口返回多个 ECharts option，GIS 结果区自动渲染。 |
+| 自动生成报告 | 已满足 | `POST /api/reports` 生成结构化报告和自包含 HTML；浏览器打印可导出 PDF。 |
+
+## 本次收口内容
+
+- 为 3D 沙盘补上顶部周期时间轴，改用后端 period 数据驱动状态、功率、风速和图表。
+- 新增 `/api/turbines/{turbine_id}/history`，GIS 风机详情补齐历史功率曲线和告警。
+- GIS 新增省级项目容量热力开关；物流路线改为流动虚线和光晕脉冲。
+- 后端启动时自动修复旧库纳雍机群从 19 台到 20 台，并补齐其 20 个季度运行断面。
+- 更新 README 的新功能说明与验证命令。
+
+## 验证结果
+
+- `npm --prefix frontend run build`：通过。
+- FastAPI `TestClient`：`/api/health`、`/api/overview`、周期 turbines、Nayong T20 history、wind farms、500MW projects 全部 200。
+- 契约断言：纳雍 20 台、100.56 MW、20 个历史断面、500MW 自然语言过滤、Plan A/B/C 全部通过。
+- 沙盘视觉、DEM fallback 和 CDP 截图命令保留在 `README.md`。当前执行沙箱禁止本地 loopback 连接与 `.git` 写入，因此无法在本次会话内重新绑定 8000/5173 或创建提交；上述 API 用进程内 TestClient 完成。

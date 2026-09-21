@@ -99,12 +99,33 @@ def turbines(period: str | None = None, wind_farm_id: str | None = None, status:
     if status:
         query = query.filter(Turbine.status == status)
     rows = query.all()
-    operations = {op.turbine_id: op for op in db.query(OperationData).filter(OperationData.period == (period or "2027-Q3"))}
+    selected_period = period or "2027-Q3"
+    operations = {op.turbine_id: op for op in db.query(OperationData).filter(OperationData.period == selected_period)}
     farms = {f.id: f for f in db.query(WindFarm).all()}
     return [{
-        **serialize_model(t), "windFarmName": farms[t.wind_farm_id].name, "regionId": farms[t.wind_farm_id].region_id,
+        **serialize_model(t), "status": operations[t.id].status if t.id in operations else t.status,
+        "windFarmName": farms[t.wind_farm_id].name, "regionId": farms[t.wind_farm_id].region_id,
         "operation": serialize_model(operations[t.id]) if t.id in operations else None,
     } for t in rows if not status or t.status == status]
+
+
+@app.get("/api/turbines/{turbine_id}/history")
+def turbine_history(turbine_id: str, db: Session = Depends(get_db)):
+    turbine = db.get(Turbine, turbine_id)
+    if not turbine:
+        raise HTTPException(404, "Turbine not found")
+    operations = db.query(OperationData).filter(
+        OperationData.turbine_id == turbine_id
+    ).order_by(OperationData.period).all()
+    alerts = db.query(Alert).filter(
+        Alert.source_id == turbine_id,
+        Alert.resolved.is_(False),
+    ).order_by(Alert.occurred_at.desc()).all()
+    return {
+        "turbine": serialize_model(turbine),
+        "operations": [serialize_model(operation) for operation in operations],
+        "alerts": [serialize_model(alert) for alert in alerts],
+    }
 
 
 @app.get("/api/map-features")

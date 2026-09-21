@@ -1,6 +1,6 @@
 # Wind Twin · 风场数字孪生 3D 沙盘
 
-一个以真实地理空间为入口的风电规划数字孪生原型：MapLibre 3D 地形沙盘 + 华北风场运营 mock 数据 + 确定性产能规划 + 自然语言场景操作 + 自包含 HTML 报告。
+一个以真实地理空间为入口的风电规划数字孪生原型：MapLibre 3D 地形沙盘 + 后端数据驱动的风场运营断面 + 确定性产能规划 + 自然语言场景操作 + 自包含 HTML 报告。
 
 ## 功能概览
 
@@ -11,9 +11,12 @@
 - EOX Sentinel-2 卫星底图、Mapterhorn Terrarium DEM、hillshade 与 3D terrain。
 - OpenFreeMap / OSM 矢量水系与行政边界；内置华北行政区、风场边界、升压站。
 - 144 台确定性种子风机，Three.js MapLibre custom layer 渲染塔筒与旋转叶片。
-- 状态视觉：运行偏蓝绿、预警橙色、故障红色高亮；功率驱动发光强度。
+- 164 台后端种子风机（8 个华北风场 + 纳雍 20 台 100.56 MW 示范机群）。
+- 2025Q1—2029Q4 顶部时间轴同时驱动沙盘状态、功率、遥测与图表。
+- 状态视觉：运行偏蓝绿、预警橙色、故障红色高亮；后端功率驱动发光强度。
 - 项目容量 3D 柱体、工厂/升压站点位、物流路线、告警圈。
-- 图层开关、区域聚焦、时间轴断面、风机/项目详情弹窗。
+- 省级容量热力、计划路线流动动画、图层开关、区域聚焦、风机/项目详情弹窗。
+- 风机详情包含周期遥测、功率曲线和未消除告警。
 
 ### 规划沙盘
 - 创建 Scenario：区域、周期、需求、目标。
@@ -54,7 +57,8 @@ cp .env.example .env
 uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-首次启动会自动创建 SQLite 数据库并写入华北 mock 数据。数据库文件：
+首次启动会自动创建 SQLite 数据库并写入确定性示例数据。启动时也会自动修复旧库中
+纳雍机群缺失的 T20 及其运行断面。数据库文件：
 
 ```text
 backend/data/wind_twin.db
@@ -102,6 +106,16 @@ CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 
 ```bash
 npm --prefix frontend run build
+```
+
+### 时间轴与风机详情
+
+沙盘页拖动右上角时间轴后，接口、状态矩阵、KPI 和功率图应切换到同一周期；
+GIS 页风机弹窗应包含 20 个季度功率点。核心接口：
+
+```bash
+curl -fsS 'http://127.0.0.1:8000/api/turbines?period=2026-Q2&wind_farm_id=wf-nayong' | python3 -m json.tool | head
+curl -fsS http://127.0.0.1:8000/api/turbines/wf-nayong-T20/history | python3 -m json.tool | head
 ```
 
 ### 3D 沙盘视觉冒烟
@@ -179,8 +193,9 @@ curl -fsS -X POST http://127.0.0.1:8000/api/reports \
 
 已在本仓库当前环境实测通过：
 
-- `/api/overview`：144 台风机；运行 136 / 预警 5 / 故障 3。
-- `/api/turbines?period=2027-Q3`：144 台，且包含运行断面数据。
+- `/api/overview`：164 台风机。
+- `/api/turbines?period=2027-Q3`：164 台，且包含运行断面数据。
+- `/api/turbines/wf-nayong-T20/history`：返回 20 个季度断面和告警。
 - scenario + planning：返回 Plan A / B / C。
 - AI command：返回 `SET_FILTER` / `FOCUS_REGION` action 与图表 option。
 - report HTML：约 1.1 MB 自包含文件，内嵌 ECharts runtime。
@@ -194,6 +209,7 @@ curl -fsS -X POST http://127.0.0.1:8000/api/reports \
 | GET | `/api/regions` | 行政/业务区域 |
 | GET | `/api/wind-farms` | 风场与统计 |
 | GET | `/api/turbines?period=2027-Q3` | 风机 + 运行数据 |
+| GET | `/api/turbines/{id}/history` | 风机周期遥测与告警 |
 | GET | `/api/projects` | 项目 |
 | GET | `/api/transport-routes` | 物流路线 |
 | POST | `/api/scenarios` | 创建 Scenario |
@@ -208,7 +224,7 @@ curl -fsS -X POST http://127.0.0.1:8000/api/reports \
 - 卫星底图：EOX Sentinel-2 cloudless public WMTS。
 - DEM / hillshade / terrain：Mapterhorn，Terrarium encoding。
 - 水系与行政矢量：OpenFreeMap / OpenMapTiles / OpenStreetMap。
-- 业务数据：内置确定性 mock seed，坐标集中在内蒙古、河北、山西等华北区域。
+- 业务数据：内置确定性示例 seed，坐标集中在内蒙古、河北、山西等华北区域。
 
 运行时会访问上述公共瓦片源；商用部署前请确认各数据源授权与配额。
 

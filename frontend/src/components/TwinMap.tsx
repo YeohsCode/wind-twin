@@ -18,6 +18,7 @@ const ll = (points: number[][]) => points.map(([lat, lng]) => [lng, lat])
 const ring = (points: number[][]) => ll(points)
 const FACTORY_COLORS: Record<string, string> = { 'F-A': '#38bdf8', 'F-B': '#a78bfa', 'F-C': '#22c55e' }
 const STATUS_COLORS: Record<string, string> = { construction: '#f97316', approved: '#38bdf8', reserve: '#94a3b8' }
+const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
 
 function makeStyle(): StyleSpecification {
   return {
@@ -81,7 +82,11 @@ export default function TwinMap(props: Props) {
       const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits']
       geoSources.forEach(id => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: emptyFC }) })
       const initial = [
-        { id: 'region-fill', type: 'fill', source: 'regions', paint: { 'fill-color': ['match', ['get', 'kind'], 'region', ['get', 'color'], 'transparent'], 'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.28, 0.11] } },
+        { id: 'region-fill', type: 'fill', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'fill-color': '#7dd3fc', 'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.06, 0.02] } },
+        { id: 'region-heat', type: 'fill', source: 'regions', filter: ['==', ['get', 'heatKind'], 'province'], paint: {
+          'fill-color': ['interpolate', ['linear'], ['coalesce', ['get', 'heatMw'], 0], 0, 'rgba(56,189,248,.03)', 800, 'rgba(56,189,248,.13)', 1800, 'rgba(132,204,22,.22)', 3200, 'rgba(249,115,22,.30)'],
+          'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.82, 0.58],
+        } },
         { id: 'region-line', type: 'line', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'line-color': 'rgba(125,211,252,.82)', 'line-width': ['case', ['boolean', ['get', 'selected'], false], 3.2, 1.4] } },
         { id: 'farm-line', type: 'line', source: 'farms', paint: { 'line-color': 'rgba(56,189,248,.72)', 'line-width': 1.6, 'line-dasharray': [2, 1.5] } },
         { id: 'route-glow', type: 'line', source: 'routes', paint: { 'line-color': ['get', 'color'], 'line-width': 7, 'line-opacity': 0.14, 'line-blur': 3 } },
@@ -130,10 +135,17 @@ export default function TwinMap(props: Props) {
     if (!map || !readyRef.current) return
     const source = (id: string, data: any) => { const s = map.getSource(id) as any; if (s) s.setData(data) }
     const selected = props.regions.find(r => r.id === props.focusRegion)
+    const heatByRegion = props.projects.reduce((accumulator, project) => {
+      accumulator.set(project.region_id, (accumulator.get(project.region_id) ?? 0) + project.capacity_mw)
+      return accumulator
+    }, new Map())
     source('regions', {
       type: 'FeatureCollection',
       features: props.regions.map(region => ({
-        type: 'Feature', id: region.id, properties: { id: region.id, kind: 'region', selected: region.id === props.focusRegion, color: '#7dd3fc' },
+        type: 'Feature', id: region.id, properties: {
+          id: region.id, kind: 'region', heatKind: region.level, heatMw: heatByRegion.get(region.id) ?? 0,
+          selected: region.id === props.focusRegion, color: '#7dd3fc',
+        },
         geometry: { type: 'Polygon', coordinates: [ring(region.boundary)] },
       })),
     })
@@ -183,8 +195,8 @@ export default function TwinMap(props: Props) {
   useEffect(() => {
     const map = mapRef.current
     if (!map || !readyRef.current) return
-    const states: Record<string, string[]> = {
-      regions: ['region-fill', 'region-line'], windFarms: ['farm-line', 'farm-point'],
+  const states: Record<string, string[]> = {
+      regions: ['region-fill', 'region-line'], heat: ['region-heat'], windFarms: ['farm-line', 'farm-point'],
       substations: ['substation-point'], projects: ['project-bars'],
       factories: ['factory-point'], routes: ['route-line', 'route-glow'], alerts: ['alert-point'],
     }
@@ -192,6 +204,22 @@ export default function TwinMap(props: Props) {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', props.layers[key] ? 'visible' : 'none')
     }))
   }, [readyTick, props.layers])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current || !props.layers.routes) return
+    let frame = 0
+    const timer = window.setInterval(() => {
+      frame = (frame + 1) % ROUTE_DASH_FRAMES.length
+      if (map.getLayer('route-line')) {
+        map.setPaintProperty('route-line', 'line-dasharray', ROUTE_DASH_FRAMES[frame])
+      }
+      if (map.getLayer('route-glow')) {
+        map.setPaintProperty('route-glow', 'line-opacity', 0.10 + (frame % 2) * 0.06)
+      }
+    }, 110)
+    return () => window.clearInterval(timer)
+  }, [readyTick, props.layers.routes])
 
   useEffect(() => {
     const map = mapRef.current
