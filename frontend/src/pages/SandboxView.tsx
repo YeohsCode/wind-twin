@@ -458,18 +458,6 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           <div className="card-head"><h2>机舱功率分布</h2><span>MW / TURBINE</span></div>
           <Chart height={56} option={distributionOption} />
         </section>
-        <section className="glass-card events">
-          <div className="card-head"><h2>运行事件</h2><span>{visibleAlerts.length} 待确认</span></div>
-          <div className="event-list">
-            {visibleAlerts.map(alert => (
-              <article key={alert.id}>
-                <i className={alert.level === 'critical' ? 'fault' : 'warn'} />
-                <div><b>{alert.title}</b><span>{alert.detail}</span></div>
-                <time>{new Date(alert.occurred_at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}</time>
-              </article>
-            ))}
-          </div>
-        </section>
         </>
         )}
       </footer>
