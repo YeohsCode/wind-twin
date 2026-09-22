@@ -23,3 +23,19 @@ class ReportIn(BaseModel):
     report_type: str = "产能规划"
     question: str = "分析华北未来三年风电项目需求和产能匹配情况"
     scenario_id: int | None = None
+
+
+class SimulationEntityIn(BaseModel):
+    id: str = Field(min_length=1, max_length=120)
+    type: str
+    position: list[float] = Field(min_length=2, max_length=2)
+    target_id: str | None = None
+    progress: float = Field(ge=0, le=100, default=0)
+    status: str = "idle"
+    payload: dict = Field(default_factory=dict)
+
+
+class SimulationTickIn(BaseModel):
+    steps: int = Field(ge=1, le=1000, default=1)
+    step_hours: int = Field(ge=1, le=8760, default=1)
+    start_time: datetime | None = None

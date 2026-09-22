@@ -175,3 +175,23 @@ class Report(Base):
     html: Mapped[str] = mapped_column(Text)
     source: Mapped[str] = mapped_column(String, default="rule")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+
+class SimulationEntity(Base):
+    __tablename__ = "simulation_entities"
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    type: Mapped[str] = mapped_column(String, index=True)
+    position: Mapped[list] = mapped_column(JSON, default=list)
+    target_id: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
+    progress: Mapped[float] = mapped_column(Float, default=0)
+    status: Mapped[str] = mapped_column(String, default="idle", index=True)
+    payload: Mapped[dict] = mapped_column(JSON, default=dict)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow, onupdate=utcnow)
+
+
+class SimulationState(Base):
+    __tablename__ = "simulation_state"
+    id: Mapped[str] = mapped_column(String, primary_key=True, default="default")
+    current_time: Mapped[datetime] = mapped_column(DateTime)
+    tick_count: Mapped[int] = mapped_column(Integer, default=0)
+    step_hours: Mapped[int] = mapped_column(Integer, default=1)
