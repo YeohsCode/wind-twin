@@ -2,12 +2,13 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import TwinMap from '../components/TwinMap'
 import Chart from '../components/Chart'
 import { api } from '../api'
-import type { AIResult, Alert, Factory, Plan, Project, Region, Route, SceneAction, Substation, Turbine, WindFarm } from '../types'
+import type { AIResult, Alert, Factory, Plan, Project, Region, Route, SceneAction, SimulationEntity, SimulationState, SimulationTimeseries, Substation, Turbine, WindFarm } from '../types'
 import type { TurbineHistory } from '../api'
 
-const ALL_LAYERS = { regions: true, heat: true, windFarms: true, turbines: true, projects: true, factories: true, substations: true, routes: true, alerts: true }
+const ALL_LAYERS = { regions: true, heat: true, windFarms: true, turbines: true, projects: true, factories: true, substations: true, routes: true, alerts: true, entities: true, powerFlow: true }
 const DEFAULT_PERIOD = '2027-Q3'
 const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
+const PLAYBACK_INTERVALS = { 1: 5000, 10: 500, 60: 120 } as const
 
 export default function GisView() {
   const [overview, setOverview] = useState<any>(null)
@@ -19,6 +20,13 @@ export default function GisView() {
   const [substations, setSubstations] = useState<Substation[]>([])
   const [routes, setRoutes] = useState<Route[]>([])
   const [alerts, setAlerts] = useState<Alert[]>([])
+  const [entities, setEntities] = useState<SimulationEntity[]>([])
+  const [simulationState, setSimulationState] = useState<SimulationState | null>(null)
+  const [timeseries, setTimeseries] = useState<SimulationTimeseries | null>(null)
+  const [selectedEntity, setSelectedEntity] = useState<SimulationEntity | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [speed, setSpeed] = useState<1 | 10 | 60>(1)
+  const [simError, setSimError] = useState('')
   const [period, setPeriod] = useState(DEFAULT_PERIOD)
   const [layers, setLayers] = useState({ ...ALL_LAYERS })
   const [filters, setFilters] = useState<any>({})
@@ -47,9 +55,11 @@ export default function GisView() {
         api.regions(), api.windFarms(), api.turbines(initialPeriod), api.factories(),
         api.projects(), api.substations(), api.routes(), api.alerts(),
       ])
+      const [simulationEntities, simulationTimeseries] = await Promise.all([api.simulationEntities(), api.simulationTimeseries(72)])
       if (!mounted) return
       setOverview(overview); setPeriod(initialPeriod); setRegions(rg); setFarms(wf); setAllTurbines(tf); setFactories(fc); setProjects(pr)
       setSubstations(ss); setRoutes(rt); setAlerts(al)
+      setEntities(simulationEntities); setSimulationState(null); setTimeseries(simulationTimeseries)
     }
     load().catch(() => setToast('后端服务未连接，请先启动 API'))
     return () => { mounted = false }
@@ -174,16 +184,64 @@ export default function GisView() {
     setBusy('')
   }
 
+  useEffect(() => {
+    if (!playing) return
+    let active = true
+    const advance = async () => {
+      try {
+        const result = await api.simulationTick(1, 1)
+        const series = await api.simulationTimeseries(72)
+        if (!active) return
+        setEntities(result.entities)
+        setSimulationState(result.state)
+        setTimeseries(series)
+        setSimError('')
+        setSelectedEntity(current => result.entities.find(entity => entity.id === current?.id) ?? current)
+      } catch {
+        if (active) { setPlaying(false); setSimError('推演服务连接失败') }
+      }
+    }
+    advance()
+    const timer = window.setInterval(advance, PLAYBACK_INTERVALS[speed])
+    return () => { active = false; window.clearInterval(timer) }
+  }, [playing, speed])
+
   const status = overview?.statusCounts ?? {}
+  const entityLabel = (entity: SimulationEntity) => ({
+    transport_crew: '运输队', crane: '吊装机', production_equipment: '生产设备',
+    storage_unit: '储能', transmission_line: '输电线路', wind_turbine_site: '机位',
+  }[entity.type] ?? entity.type)
+  const ownerLabel = selectedEntity ? [
+    farms.find(farm => farm.id === selectedEntity.owner_id)?.name,
+    projects.find(project => project.id === selectedEntity.owner_id)?.name,
+    factories.find(factory => factory.id === selectedEntity.owner_id)?.name,
+  ].find(Boolean) ?? selectedEntity.owner_id : '—'
+  const priceOption = useMemo(() => ({
+    backgroundColor: 'transparent',
+    tooltip: { trigger: 'axis', valueFormatter: (value: number) => `${value?.toFixed(1)} 元/MWh` },
+    legend: { data: ['小时电价'], textStyle: { color: '#7ea8bd', fontSize: 10 }, right: 4, top: 0, itemWidth: 12, itemHeight: 6 },
+    grid: { left: 40, right: 10, top: 22, bottom: 22 },
+    xAxis: { type: 'category', boundaryGap: false, data: (timeseries?.timestamps ?? []).map(value => new Date(value).toISOString().slice(5, 16).replace('T', ' ')), axisLine: { lineStyle: { color: 'rgba(125,211,252,.25)' } }, axisLabel: { color: '#67879b', fontSize: 9 } },
+    yAxis: { type: 'value', name: '元/MWh', nameTextStyle: { color: '#67879b' }, axisLabel: { color: '#67879b', fontSize: 9 }, splitLine: { lineStyle: { color: 'rgba(125,211,252,.08)' } } },
+    series: [{
+      name: '小时电价', type: 'line', smooth: true, symbol: 'none',
+      lineStyle: { width: 2, color: '#facc15', shadowColor: 'rgba(250,204,21,.36)', shadowBlur: 12 },
+      areaStyle: { color: 'rgba(250,204,21,.13)' },
+      data: timeseries?.price_yuan_mwh ?? [],
+      markPoint: timeseries?.price_yuan_mwh?.length ? { data: [{ coord: [0, timeseries.price_yuan_mwh[0]], value: timeseries.price_yuan_mwh[0].toFixed(0) }], symbolSize: 42, itemStyle: { color: '#facc15' }, label: { color: '#04121e', fontSize: 9 } } : undefined,
+    }],
+  }), [timeseries])
   return (
     <div className="app-shell">
       <TwinMap
         regions={regions} farms={farms} turbines={layers.turbines ? filteredTurbines : []}
         factories={factories} projects={filteredProjects} substations={substations}
         routes={visibleRoutes} alerts={alerts} activePlan={activePlan} layers={layers} period={period}
+        entities={entities} selectedEntityId={selectedEntity?.id}
         focusRegion={focusRegion} focusFarm={focusFarm}
         onSelectTurbine={setSelectedTurbine} onSelectProject={setSelectedProject}
         onSelectRegion={drillRegion} onSelectFarm={drillFarm}
+        onSelectEntity={setSelectedEntity}
       />
 
       <div className="level-crumbs">
@@ -206,6 +264,17 @@ export default function GisView() {
         </div>
       </header>
 
+      <div className="sim-control">
+        <button className={playing ? 'active' : ''} onClick={() => setPlaying(value => !value)}>{playing ? '暂停' : '播放'}</button>
+        <div className="speed-group" role="group" aria-label="推演速度">
+          {([1, 10, 60] as const).map(value => (
+            <button key={value} className={speed === value ? 'active' : ''} onClick={() => setSpeed(value)}>{value}x</button>
+          ))}
+        </div>
+        <small>{simulationState ? `T+${simulationState.tick_count}h` : '准备'}</small>
+        {simError && <b>{simError}</b>}
+      </div>
+
       <aside className={`panel left${collapsed.left ? ' collapsed' : ''}`}>
         <button className="panel-toggle" onClick={() => togglePanel('left')} aria-label="折叠左侧面板">‹</button>
         {collapsed.left ? (
@@ -217,7 +286,7 @@ export default function GisView() {
           <div className="layer-grid">
             {Object.entries(layers).map(([key, value]) => (
               <button key={key} className={value ? 'active' : ''} onClick={() => setLayers(current => ({ ...current, [key]: !value }))}>
-                {{ regions: '行政区', heat: '区域热力', windFarms: '风场', turbines: '风机', projects: '项目', factories: '工厂', substations: '升压站', routes: '物流', alerts: '告警' }[key]}
+                {{ regions: '行政区', heat: '区域热力', windFarms: '风场', turbines: '风机', projects: '项目', factories: '工厂', substations: '升压站', routes: '物流', alerts: '告警', entities: '实体', powerFlow: '电力流' }[key]}
               </button>
             ))}
           </div>
@@ -268,6 +337,30 @@ export default function GisView() {
           <button className="panel-collapsed-hint" onClick={() => togglePanel('right')}>分析 / 产能</button>
         ) : (
         <>
+        {selectedEntity && (
+          <section>
+            <h2>实体详情</h2>
+            <div className="entity-detail">
+              <div className="entity-detail-head">
+                <div><small>{entityLabel(selectedEntity)}</small><b>{selectedEntity.name}</b></div>
+                <button onClick={() => setSelectedEntity(null)}>×</button>
+              </div>
+              <div className="entity-meta">
+                <span>状态<i>{selectedEntity.status}</i></span>
+                <span>进度<i>{selectedEntity.progress.toFixed(1)}%</i></span>
+                <span>归属<i title={ownerLabel}>{ownerLabel}</i></span>
+              </div>
+              <div className="progress-track"><i style={{ width: `${Math.max(0, Math.min(100, selectedEntity.progress))}%` }} /></div>
+              {selectedEntity.type === 'storage_unit' && (
+                <div className="soc-block">
+                  <label>SOC <b>{(Number(selectedEntity.payload?.soc ?? 0) * 100).toFixed(1)}%</b></label>
+                  <div className="soc-track"><i style={{ width: `${Math.max(0, Math.min(100, Number(selectedEntity.payload?.soc ?? 0) * 100))}%` }} /></div>
+                </div>
+              )}
+              <pre>{JSON.stringify(selectedEntity.payload, null, 2)}</pre>
+            </div>
+          </section>
+        )}
         <section>
           <h2>AI 场景分析</h2>
           <textarea value={question} onChange={e => setQuestion(e.target.value)} rows={3} />
@@ -350,6 +443,13 @@ export default function GisView() {
         </div>
       )}
       {(busy || toast) && <div className="status-toast">{busy || toast}</div>}
+      <section className="price-strip">
+        <div className="price-head">
+          <span>电力现货小时电价</span>
+          <b>{timeseries?.price_yuan_mwh?.[0] != null ? `${timeseries.price_yuan_mwh[0].toFixed(1)} 元/MWh` : '—'}</b>
+        </div>
+        <Chart option={priceOption} height={104} />
+      </section>
     </div>
   )
 }

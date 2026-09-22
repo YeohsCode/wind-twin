@@ -24,6 +24,10 @@ export const api = {
   runPlan: (id: number) => request<{scenarioId:number; plans:any[]}>(`/api/scenarios/${id}/plan`, { method: 'POST' }),
   aiCommand: (question: string, currentPeriod: string) => request<any>('/api/ai/command', { method: 'POST', body: JSON.stringify({ question, current_period: currentPeriod }) }),
   createReport: (body: any) => request<any>('/api/reports', { method: 'POST', body: JSON.stringify(body) }),
+  simulationEntities: () => request<import('./types').SimulationEntity[]>('/api/simulation/entities'),
+  simulationTick: (steps = 1, hourStep = 1) =>
+    request<import('./types').SimulationTickResult>('/api/simulation/tick', { method: 'POST', body: JSON.stringify({ steps, hour_step: hourStep }) }),
+  simulationTimeseries: (hours = 72) => request<import('./types').SimulationTimeseries>(`/api/simulation/timeseries?hours=${hours}`),
 }
 
 export type TurbineHistory = {

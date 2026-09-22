@@ -3,15 +3,17 @@ import maplibregl, { Map as MLMap, StyleSpecification } from 'maplibre-gl'
 import { Protocol } from 'pmtiles'
 import * as THREE from 'three'
 import { TurbineLayer } from './TurbineLayer'
-import type { Alert, Factory, Project, Region, Route, Substation, Turbine, WindFarm, Plan } from '../types'
+import type { Alert, Factory, Project, Region, Route, Substation, SimulationEntity, Turbine, WindFarm, Plan } from '../types'
 
 type Layers = Record<string, boolean>
 type Props = {
   regions: Region[]; farms: WindFarm[]; turbines: Turbine[]; factories: Factory[]; projects: Project[]
   substations: Substation[]; routes: Route[]; alerts: Alert[]; activePlan: Plan | null
   layers: Layers; period: string; focusRegion: string | null; focusFarm: string | null
+  entities?: SimulationEntity[]; selectedEntityId?: string | null
   onSelectTurbine: (t: Turbine) => void; onSelectProject: (p: Project) => void
   onSelectRegion: (id: string) => void; onSelectFarm: (id: string) => void
+  onSelectEntity?: (entity: SimulationEntity) => void
 }
 
 const emptyFC = { type: 'FeatureCollection' as const, features: [] }
@@ -20,6 +22,100 @@ const ring = (points: number[][]) => ll(points)
 const FACTORY_COLORS: Record<string, string> = { 'F-A': '#38bdf8', 'F-B': '#a78bfa', 'F-C': '#22c55e' }
 const STATUS_COLORS: Record<string, string> = { construction: '#f97316', approved: '#38bdf8', reserve: '#94a3b8' }
 const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
+const SIM_TYPE_LABELS: Record<string, string> = {
+  transport_crew: '运输队', crane: '吊装机', production_equipment: '生产设备',
+  storage_unit: '储能', transmission_line: '输电线路', wind_turbine_site: '机位',
+}
+const SIM_STATUS_COLORS: Record<string, string> = {
+  moving: '#38bdf8', producing: '#22c55e', installing: '#f97316', online: '#22c55e',
+  charging: '#a78bfa', discharging: '#fb7185', active: '#38bdf8', standby: '#facc15',
+  waiting: '#94a3b8', idle: '#64748b',
+}
+const iconCache = new Map<string, HTMLCanvasElement>()
+
+function roundedRect(context: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
+  context.beginPath()
+  context.moveTo(x + radius, y)
+  context.arcTo(x + width, y, x + width, y + height, radius)
+  context.arcTo(x + width, y + height, x, y + height, radius)
+  context.arcTo(x, y + height, x, y, radius)
+  context.arcTo(x, y, x + width, y, radius)
+  context.closePath()
+}
+
+function simulationIcon(key: string) {
+  const cached = iconCache.get(key)
+  if (cached) return cached
+  const [type, status, progressKey] = key.split('|')
+  const canvas = document.createElement('canvas')
+  canvas.width = 42; canvas.height = 42
+  const context = canvas.getContext('2d')
+  if (!context) return canvas
+  const frameColor = SIM_STATUS_COLORS[status] ?? '#94a3b8'
+  context.clearRect(0, 0, 42, 42)
+  context.strokeStyle = frameColor
+  context.fillStyle = 'rgba(3,18,30,.88)'
+  context.lineWidth = 2.4
+  roundedRect(context, 7, 10, 28, 22, 5)
+  context.fill(); context.stroke()
+  context.strokeStyle = '#e2f6ff'; context.lineWidth = 2; context.lineCap = 'round'
+  context.beginPath()
+  if (type === 'transport_crew') {
+    context.rect(12, 17, 11, 6); context.moveTo(25, 18); context.lineTo(30, 20); context.lineTo(30, 23); context.lineTo(25, 23)
+    context.moveTo(17, 26); context.arc(17, 26, 1.8, 0, Math.PI * 2); context.moveTo(27, 26); context.arc(27, 26, 1.8, 0, Math.PI * 2)
+  } else if (type === 'crane') {
+    context.moveTo(14, 28); context.lineTo(18, 16); context.lineTo(30, 19); context.moveTo(18, 16); context.lineTo(18, 28); context.moveTo(24, 19); context.lineTo(24, 25)
+  } else if (type === 'production_equipment') {
+    context.rect(13, 22, 16, 6); context.moveTo(14, 22); context.lineTo(19, 17); context.lineTo(19, 22); context.moveTo(21, 22); context.lineTo(26, 17); context.lineTo(26, 22)
+  } else if (type === 'storage_unit') {
+    roundedRect(context, 14, 16, 14, 11, 2); context.moveTo(23, 15); context.lineTo(20, 21); context.lineTo(23, 21); context.lineTo(20, 28)
+  } else if (type === 'transmission_line') {
+    context.moveTo(21, 14); context.lineTo(21, 28); context.moveTo(15, 18); context.lineTo(27, 18); context.moveTo(17, 28); context.lineTo(21, 21); context.lineTo(25, 28)
+  } else {
+    context.moveTo(21, 15); context.lineTo(21, 24); context.moveTo(14, 27); context.lineTo(28, 27); context.moveTo(21, 24); context.lineTo(15, 27); context.moveTo(21, 24); context.lineTo(27, 27)
+  }
+  context.stroke()
+  const progress = Math.max(0, Math.min(100, Number(progressKey) / 4))
+  context.strokeStyle = progress >= 1 ? '#7df3c4' : frameColor
+  context.lineWidth = 3
+  context.beginPath()
+  context.arc(21, 21, 18, Math.PI * 1.5, Math.PI * 1.5 + progress * Math.PI * 2)
+  context.stroke()
+  iconCache.set(key, canvas)
+  return canvas
+}
+
+function canvasImage(canvas: HTMLCanvasElement) {
+  const context = canvas.getContext('2d')!
+  return { width: canvas.width, height: canvas.height, data: context.getImageData(0, 0, canvas.width, canvas.height).data }
+}
+
+function routePosition(routes: Route[], routeId: string | undefined, progress: number, reverse = false): [number, number] | null {
+  const route = routes.find(item => item.id === routeId)
+  if (!route?.geometry.length) return null
+  const fraction = Math.max(0, Math.min(1, (reverse ? 1 - progress / 100 : progress / 100)))
+  const distances = route.geometry.slice(1).map((point, index) => Math.hypot((point[0] - route.geometry[index][0]) * 111, (point[1] - route.geometry[index][1]) * 111 * Math.cos(route.geometry[index][0] * Math.PI / 180)))
+  const total = distances.reduce((sum, value) => sum + value, 0)
+  if (!total) return [route.geometry[0][0], route.geometry[0][1]]
+  let target = total * fraction
+  for (let index = 0; index < distances.length; index += 1) {
+    if (target <= distances[index] || index === distances.length - 1) {
+      const local = distances[index] ? Math.min(1, target / distances[index]) : 0
+      const start = route.geometry[index]; const end = route.geometry[index + 1] ?? start
+      return [start[0] + (end[0] - start[0]) * local, start[1] + (end[1] - start[1]) * local]
+    }
+    target -= distances[index]
+  }
+  return null
+}
+
+function routeBearing(routes: Route[], routeId: string | undefined, progress: number, reverse = false) {
+  const fraction = Math.max(0, Math.min(1, (reverse ? 1 - progress / 100 : progress / 100)))
+  const from = routePosition(routes, routeId, fraction * 100, false)
+  const to = routePosition(routes, routeId, Math.min(1, fraction + 0.015) * 100, false)
+  if (!from || !to) return 0
+  return Math.atan2((to[1] - from[1]) * Math.cos(from[0] * Math.PI / 180), to[0] - from[0]) * 180 / Math.PI
+}
 
 function makeStyle(): StyleSpecification {
   return {
@@ -90,7 +186,7 @@ export default function TwinMap(props: Props) {
         'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 6, 0.35, 10, 0.12],
       })
       map.setTerrain({ source: 'terrain', exaggeration: 1.25 })
-      const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits']
+      const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits', 'simulationEntities', 'powerFlow', 'powerArrows']
       geoSources.forEach(id => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: emptyFC }) })
       const initial = [
         { id: 'region-fill', type: 'fill', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'fill-color': '#7dd3fc', 'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.06, 0.02] } },
@@ -111,6 +207,40 @@ export default function TwinMap(props: Props) {
         { id: 'turbine-hit', type: 'circle', source: 'turbineHits', paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-opacity': 0.01 } },
       ] as any[]
       initial.forEach(layer => { if (!map.getLayer(layer.id)) map.addLayer(layer) })
+      const simTypes = Object.keys(SIM_TYPE_LABELS)
+      for (const type of simTypes) {
+        for (const status of Object.keys(SIM_STATUS_COLORS)) {
+          for (let progress = 0; progress <= 4; progress += 1) {
+            const key = `${type}|${status}|${progress}`
+            if (!map.hasImage(key)) map.addImage(key, canvasImage(simulationIcon(key)), { pixelRatio: 2 })
+          }
+        }
+      }
+      if (!map.hasImage('flow-arrow')) {
+        const arrow = document.createElement('canvas')
+        arrow.width = 22; arrow.height = 22
+        const context = arrow.getContext('2d')!
+        context.strokeStyle = '#f8fafc'; context.lineWidth = 3; context.lineCap = 'round'
+        context.beginPath(); context.moveTo(5, 11); context.lineTo(16, 11); context.moveTo(12, 6); context.lineTo(17, 11); context.lineTo(12, 16); context.stroke()
+        map.addImage('flow-arrow', canvasImage(arrow), { pixelRatio: 2 })
+      }
+      map.addLayer({ id: 'power-flow-glow', type: 'line', source: 'powerFlow', paint: {
+        'line-color': ['case', ['>=', ['get', 'flow'], 0], '#67e8f9', '#f97316'],
+        'line-width': ['interpolate', ['linear'], ['abs', ['get', 'flow']], 0, 5, 200, 14], 'line-opacity': .12, 'line-blur': 4,
+      } })
+      map.addLayer({ id: 'power-flow-line', type: 'line', source: 'powerFlow', paint: {
+        'line-color': ['case', ['>=', ['get', 'flow'], 0], '#38bdf8', '#fb923c'],
+        'line-width': ['interpolate', ['linear'], ['abs', ['get', 'flow']], 0, 1.4, 50, 3, 200, 8],
+        'line-opacity': ['case', ['>', ['abs', ['get', 'flow']], 0.1], .9, .35], 'line-dasharray': [1.4, 1],
+      } })
+      map.addLayer({ id: 'power-flow-arrow', type: 'symbol', source: 'powerArrows', layout: {
+        'icon-image': 'flow-arrow', 'icon-size': .72, 'icon-rotate': ['get', 'bearing'], 'icon-rotation-alignment': 'map', 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+      }, paint: { 'icon-opacity': ['case', ['>', ['abs', ['get', 'flow']], 0.1], .95, .2] } })
+      map.addLayer({ id: 'simulation-icons', type: 'symbol', source: 'simulationEntities', layout: {
+        'icon-image': ['get', 'icon'], 'icon-size': .86, 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+        'icon-rotate': ['case', ['==', ['get', 'type'], 'transport_crew'], ['get', 'heading'], 0], 'icon-rotation-alignment': 'map', 'icon-pitch-alignment': 'viewport',
+      } })
+      map.addLayer({ id: 'simulation-hit', type: 'circle', source: 'simulationEntities', paint: { 'circle-radius': 15, 'circle-color': '#fff', 'circle-opacity': .01 } })
       const layer = new TurbineLayer([114.4, 40.8])
       turbineLayerRef.current = layer
       if (!map.getLayer(layer.id)) map.addLayer(layer as any)
@@ -119,6 +249,11 @@ export default function TwinMap(props: Props) {
     })
 
     map.on('click', event => {
+      const entityHits = map.queryRenderedFeatures(event.point, { layers: ['simulation-hit'] })
+      if (entityHits.length) {
+        const entity = clickHandlers.current.entities?.find(item => item.id === entityHits[0].properties?.id)
+        if (entity) { clickHandlers.current.onSelectEntity?.(entity); return }
+      }
       const farmHitsFirst = map.queryRenderedFeatures(event.point, { layers: ['farm-hit'] })
       const hits = map.queryRenderedFeatures(event.point, { layers: ['turbine-hit'] })
       if (hits.length && !farmHitsFirst.length) {
@@ -215,6 +350,40 @@ export default function TwinMap(props: Props) {
       }).filter(feature => feature.geometry.coordinates[0] !== 114 || feature.geometry.coordinates[1] !== 40),
     })
     source('turbineHits', { type: 'FeatureCollection', features: props.turbines.map(t => ({ type: 'Feature', properties: { id: t.id }, geometry: { type: 'Point', coordinates: [t.lng, t.lat] } })) })
+    source('simulationEntities', {
+      type: 'FeatureCollection',
+      features: (props.entities ?? []).map(entity => {
+        const reverse = entity.payload?.direction === 'return' || entity.payload?.direction === 'returning'
+        const position = routePosition(props.routes, entity.payload?.route_id, entity.progress, reverse) ?? entity.position
+        const traveler = entity.type === 'transport_crew'
+        return {
+          type: 'Feature',
+          properties: {
+            id: entity.id, type: entity.type, status: entity.status,
+            heading: traveler ? routeBearing(props.routes, entity.payload?.route_id, entity.progress, reverse) : 0,
+            icon: `${entity.type}|${entity.status}|${Math.min(4, Math.floor(Math.max(0, Math.min(100, entity.progress)) / 25))}`,
+            selected: entity.id === props.selectedEntityId,
+          },
+          geometry: { type: 'Point', coordinates: [position[1], position[0]] },
+        }
+      }),
+    })
+    const farmById = new Map(props.farms.map(farm => [farm.id, farm]))
+    const projectById = new Map(props.projects.map(project => [project.id, project]))
+    const flowFeatures = (props.entities ?? []).filter(entity => entity.type === 'transmission_line').flatMap(entity => {
+      const from = farmById.get(entity.payload?.from_id)
+      const to = projectById.get(entity.payload?.to_id)
+      if (!from || !to) return []
+      const flow = Number(entity.payload?.flow_mw ?? 0)
+      const forwardBearing = Math.atan2((to.lng - from.lng) * Math.cos(from.lat * Math.PI / 180), to.lat - from.lat) * 180 / Math.PI
+      const bearing = flow < 0 ? forwardBearing + 180 : forwardBearing
+      return [{
+        type: 'Feature', properties: { id: entity.id, flow, bearing },
+        geometry: { type: 'LineString', coordinates: [[from.lng, from.lat], [to.lng, to.lat]] },
+      }]
+    })
+    source('powerFlow', { type: 'FeatureCollection', features: flowFeatures })
+    source('powerArrows', { type: 'FeatureCollection', features: flowFeatures })
     turbineLayerRef.current?.setData(props.turbines)
   }, [readyTick, props.regions, props.farms, props.turbines, props.factories, props.projects, props.substations, props.routes, props.alerts, props.activePlan, props.focusRegion])
 
@@ -225,6 +394,7 @@ export default function TwinMap(props: Props) {
       regions: ['region-fill', 'region-line'], heat: ['region-heat'], windFarms: ['farm-line', 'farm-point'],
       substations: ['substation-point'], projects: ['project-bars'],
       factories: ['factory-point'], routes: ['route-line', 'route-glow'], alerts: ['alert-point'],
+      entities: ['simulation-icons', 'simulation-hit'], powerFlow: ['power-flow-glow', 'power-flow-line', 'power-flow-arrow'],
     }
     Object.entries(states).forEach(([key, layerIds]) => layerIds.forEach(id => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', props.layers[key] ? 'visible' : 'none')
@@ -246,6 +416,17 @@ export default function TwinMap(props: Props) {
     }, 110)
     return () => window.clearInterval(timer)
   }, [readyTick, props.layers.routes])
+
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !readyRef.current || !props.layers.powerFlow) return
+    let frame = 0
+    const timer = window.setInterval(() => {
+      frame = (frame + 1) % ROUTE_DASH_FRAMES.length
+      if (map.getLayer('power-flow-line')) map.setPaintProperty('power-flow-line', 'line-dasharray', ROUTE_DASH_FRAMES[frame])
+    }, 130)
+    return () => window.clearInterval(timer)
+  }, [readyTick, props.layers.powerFlow])
 
   useEffect(() => {
     const map = mapRef.current

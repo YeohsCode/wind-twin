@@ -20,3 +20,24 @@ export type MapFeature = {
   geometry: { type: 'Point'|'Polygon'; coordinates: any }
 }
 export type MapFeatureCollection = { type: 'FeatureCollection'; features: MapFeature[] }
+export type SimulationEntityType = 'transport_crew' | 'crane' | 'production_equipment' | 'storage_unit' | 'transmission_line' | 'wind_turbine_site'
+export type SimulationEntity = {
+  id: string
+  type: SimulationEntityType
+  name: string
+  status: string
+  position: [number, number]
+  progress: number
+  owner_id: string
+  payload: Record<string, any>
+  updated_at: string
+}
+export type SimulationState = { current_time: string; tick_count: number; step_hours: number }
+export type SimulationTickResult = { state: SimulationState; entities: SimulationEntity[] }
+export type SimulationTimeseries = {
+  timestamps: string[]
+  price_yuan_mwh: number[]
+  load_mw: number[]
+  gen_mw: number[]
+  storage_delta: number[]
+}
