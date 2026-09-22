@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { METERS_PER_SCENE_UNIT } from './demSource'
 import { activeTerrainProjection, projectToScene, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
@@ -57,6 +58,8 @@ type Props = {
 const TOWER_HEIGHT_UNITS = 160 / METERS_PER_SCENE_UNIT
 const NACELLE_LENGTH_UNITS = 22 / METERS_PER_SCENE_UNIT
 const ROTOR_RADIUS_UNITS = 58 / METERS_PER_SCENE_UNIT
+const CLOSEUP_SCALE = 1 / METERS_PER_SCENE_UNIT
+const CRANE_SCALE = 0.55
 function basemapZoom(sideMeters: number) {
   const mosaicMeters = 40_075_016.868 * 3
   return Math.max(11, Math.min(15, Math.floor(Math.log2(mosaicMeters / Math.max(1, sideMeters * 1.2)))))
@@ -67,6 +70,74 @@ function lngToTile(lng: number, zoom: number) {
 }
 
 type SimulationModelCache = Partial<Record<'truck', THREE.Group>>
+
+type TurbineModel = { geometry: THREE.BufferGeometry; material: THREE.Material | THREE.Material[] }
+type TurbineAssets = { tower?: TurbineModel; closeup?: TurbineModel }
+
+let towerModelCache: TurbineModel | null = null
+let closeupModelCache: TurbineModel | null = null
+let turbineAssetsPromise: Promise<TurbineAssets> | null = null
+
+function modelFromScene(source: THREE.Object3D): TurbineModel {
+  source.updateMatrixWorld(true)
+  const geometries: THREE.BufferGeometry[] = []
+  const materials: THREE.Material[] = []
+  source.traverse(child => {
+    const mesh = child as THREE.Mesh
+    if (!mesh.isMesh) return
+    const geometry = mesh.geometry.clone()
+    geometry.applyMatrix4(mesh.matrixWorld)
+    geometries.push(geometry)
+    mesh.geometry.dispose()
+    if (Array.isArray(mesh.material)) materials.push(...mesh.material)
+    else materials.push(mesh.material)
+  })
+  if (!geometries.length) throw new Error('GLB contains no mesh geometry')
+  const merged = mergeGeometries(geometries, false)
+  geometries.forEach(geometry => geometry.dispose())
+  if (!merged) throw new Error('Unable to merge GLB geometry')
+  return { geometry: merged, material: materials.length === 1 ? materials[0] : materials }
+}
+
+function loadTurbineGeometry(url: string, transform: (model: TurbineModel) => void) {
+  return new Promise<TurbineModel>((resolve, reject) => {
+    const timeout = window.setTimeout(() => reject(new Error('turbine GLB load timeout')), 12_000)
+    new GLTFLoader().load(url, gltf => {
+      window.clearTimeout(timeout)
+      try {
+        const model = modelFromScene(gltf.scene)
+        transform(model)
+        resolve(model)
+      } catch (error) {
+        reject(error)
+      }
+    }, undefined, error => {
+      window.clearTimeout(timeout)
+      reject(error)
+    })
+  })
+}
+
+function loadTurbineAssets() {
+  turbineAssetsPromise ??= Promise.allSettled([
+    loadTurbineGeometry('/models/tower.glb', model => {
+      model.geometry.rotateX(-Math.PI / 2)
+      model.geometry.computeBoundingBox()
+      model.geometry.translate(0, -(model.geometry.boundingBox?.min.y ?? 0), 0)
+      towerModelCache = model
+    }),
+    loadTurbineGeometry('/models/turbine_lq.glb', model => {
+      model.geometry.rotateX(-Math.PI / 2)
+      model.geometry.computeBoundingBox()
+      model.geometry.translate(0, -(model.geometry.boundingBox?.min.y ?? 0), 0)
+      closeupModelCache = model
+    }),
+  ]).then(([towerResult, closeupResult]) => ({
+    tower: towerResult.status === 'fulfilled' ? towerResult.value : undefined,
+    closeup: closeupResult.status === 'fulfilled' ? closeupResult.value : undefined,
+  }))
+  return turbineAssetsPromise
+}
 
 function latToTile(lat: number, zoom: number) {
   const rad = lat * Math.PI / 180
@@ -121,6 +192,8 @@ export default function SandboxScene({
   const dataRef = useRef(turbines)
   const turbineMapRef = useRef(new Map<string, THREE.Group>())
   const bladeMapRef = useRef(new Map<string, THREE.Group>())
+  const towerInstancedRef = useRef<THREE.InstancedMesh | null>(null)
+  const closeupRootRef = useRef<THREE.Group | null>(null)
   const labelMapRef = useRef(new Map<string, CSS2DObject>())
   const selectedRef = useRef(selectedId)
   const nightRef = useRef(night)
@@ -136,6 +209,7 @@ export default function SandboxScene({
   const ambientRef = useRef<THREE.HemisphereLight | null>(null)
   const sunRef = useRef<THREE.DirectionalLight | null>(null)
   const focusNacelleRef = useRef<((id: string) => void) | null>(null)
+  const applyTurbineModelViewRef = useRef<(() => void) | null>(null)
   const terrainGeometryRef = useRef<THREE.BufferGeometry | null>(null)
   const basemapMeshRef = useRef<THREE.Mesh | null>(null)
   const gisGroupRef = useRef<THREE.Group | null>(null)
@@ -302,6 +376,89 @@ export default function SandboxScene({
     bladeGeometry.translate(0, 0, -0.016)
     const warningGeometry = new THREE.SphereGeometry(0.12, 10, 8)
 
+    let towerModel = towerModelCache
+    let closeupModel = closeupModelCache
+    const updateTowerInstances = () => {
+      if (!towerModel) return
+      const count = Math.max(1, dataRef.current.length)
+      if (!towerInstancedRef.current || towerInstancedRef.current.count !== count) {
+        if (towerInstancedRef.current) {
+          scene.remove(towerInstancedRef.current)
+          towerInstancedRef.current.dispose()
+        }
+        towerInstancedRef.current = new THREE.InstancedMesh(
+          towerModel.geometry,
+          new THREE.MeshStandardMaterial({ roughness: 0.48, metalness: 0.08 }),
+          count,
+        )
+        towerInstancedRef.current.frustumCulled = false
+        towerInstancedRef.current.userData = { turbineTowerInstances: true }
+        scene.add(towerInstancedRef.current)
+      }
+      const tower = towerInstancedRef.current
+      if (!tower) return
+      towerModel.geometry.computeBoundingBox()
+      const modelHeight = Math.max(Number.EPSILON, (towerModel.geometry.boundingBox?.max.y ?? 0) - (towerModel.geometry.boundingBox?.min.y ?? 0))
+      const matrix = new THREE.Matrix4()
+      const quaternion = new THREE.Quaternion()
+      const position = new THREE.Vector3()
+      const scale = new THREE.Vector3()
+      const color = new THREE.Color()
+      dataRef.current.forEach((turbine, index) => {
+        const yaw = 0.65 + index * 0.18
+        position.set(turbine.x, terrainHeight(turbine.x, turbine.z), turbine.z)
+        quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
+        scale.setScalar(TOWER_HEIGHT_UNITS / modelHeight)
+        matrix.compose(position, quaternion, scale)
+        tower.setMatrixAt(index, matrix)
+        color.set(turbine.status === 'fault' ? '#ff5a48' : turbine.status === 'warning' ? '#ffb020' : '#f8fbff')
+        tower.setColorAt(index, color)
+      })
+      for (let index = dataRef.current.length; index < tower.count; index += 1) {
+        matrix.makeScale(0, 0, 0)
+        tower.setMatrixAt(index, matrix)
+      }
+      tower.instanceMatrix.needsUpdate = true
+      if (tower.instanceColor) tower.instanceColor.needsUpdate = true
+    }
+
+    const applyTurbineModelView = () => {
+      const closeupRoot = closeupRootRef.current
+      if (!closeupRoot) return
+      const selectedTurbine = selectedRef.current ? dataRef.current.find(turbine => turbine.id === selectedRef.current) : undefined
+      const showCloseup = Boolean(closeupModel && selectedTurbine)
+      closeupRoot.visible = showCloseup
+      if (closeupModel && selectedTurbine) {
+        const index = dataRef.current.indexOf(selectedTurbine)
+        closeupRoot.position.set(selectedTurbine.x, terrainHeight(selectedTurbine.x, selectedTurbine.z), selectedTurbine.z)
+        closeupRoot.scale.setScalar(CLOSEUP_SCALE)
+        closeupRoot.rotation.y = 0.65 + index * 0.18
+      }
+      turbineMapRef.current.forEach((group, id) => {
+        const hideBodies = showCloseup && id === selectedRef.current
+        group.traverse(child => {
+          if ((child as THREE.Mesh).isMesh && child.userData.turbineBody) child.visible = !hideBodies
+        })
+      })
+      if (towerInstancedRef.current && selectedTurbine) {
+        const hiddenIndex = dataRef.current.indexOf(selectedTurbine)
+        const matrix = new THREE.Matrix4()
+        updateTowerInstances()
+        if (showCloseup && hiddenIndex >= 0) {
+          towerInstancedRef.current.setMatrixAt(hiddenIndex, matrix.makeScale(0, 0, 0))
+        }
+        towerInstancedRef.current.instanceMatrix.needsUpdate = true
+      }
+    }
+    applyTurbineModelViewRef.current = applyTurbineModelView
+
+    if (closeupModelCache && !closeupRootRef.current) {
+      closeupRootRef.current = new THREE.Group()
+      closeupRootRef.current.visible = false
+      closeupRootRef.current.add(new THREE.Mesh(closeupModelCache.geometry, closeupModelCache.material))
+      scene.add(closeupRootRef.current)
+    }
+
     const buildTurbines = () => {
       turbineMapRef.current.forEach(group => {
         scene.remove(group)
@@ -345,6 +502,11 @@ export default function SandboxScene({
           blade.userData = { turbineId: turbine.id, clickable: true }
           rotor.add(blade)
         }
+        tower.userData.turbineBody = true
+        nacelle.userData.turbineBody = true
+        hub.userData.turbineBody = true
+        rotor.children.forEach(child => { child.userData.turbineBody = true })
+        tower.visible = !towerModel
         const lampColor = turbine.status === 'fault' ? '#ff3b28' : '#ffb020'
         const warning = new THREE.Mesh(warningGeometry, new THREE.MeshStandardMaterial({
           color: lampColor, emissive: lampColor, emissiveIntensity: nightRef.current ? 1.5 : 0.35,
@@ -370,6 +532,8 @@ export default function SandboxScene({
         bladeMapRef.current.set(turbine.id, rotor)
         labelMapRef.current.set(turbine.id, label)
       })
+      updateTowerInstances()
+      applyTurbineModelView()
     }
     buildTurbines()
     rebuildRef.current = buildTurbines
@@ -459,6 +623,7 @@ export default function SandboxScene({
       assembly.position.set(0.16, 0.65, -2.55)
       group.add(carBody, counterweight, cab, mast, boom, assembly)
       group.userData.craneBoom = boom
+      group.scale.setScalar(CRANE_SCALE)
       return { group, tower, nacelle, rotor, assembly }
     }
     const makeStorage = () => {
@@ -602,6 +767,23 @@ export default function SandboxScene({
       })
       .finally(() => window.clearTimeout(modelLoadTimer))
 
+    void loadTurbineAssets().then(assets => {
+      if (modelLoadCancelled) return
+      if (assets.tower) {
+        towerModel = assets.tower
+        rebuildRef.current?.()
+      }
+      if (assets.closeup) {
+        closeupModel = assets.closeup
+        if (closeupRootRef.current) scene.remove(closeupRootRef.current)
+        closeupRootRef.current = new THREE.Group()
+        closeupRootRef.current.visible = false
+        closeupRootRef.current.add(new THREE.Mesh(closeupModel.geometry, closeupModel.material))
+        scene.add(closeupRootRef.current)
+        applyTurbineModelView()
+      }
+    })
+
     const fitCamera = () => {
       const points: ScenePoint[] = dataRef.current.length
         ? dataRef.current
@@ -678,10 +860,17 @@ export default function SandboxScene({
       pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
       raycaster.setFromCamera(pointer, camera)
       const targets: THREE.Object3D[] = []
+      if (towerInstancedRef.current) targets.push(towerInstancedRef.current)
       turbineMapRef.current.forEach(group => targets.push(group, ...group.children))
       const hits = raycaster.intersectObjects(targets, true)
-      const hit = hits.find(item => item.object.userData.turbineId)
-      if (hit) onSelect(String(hit.object.userData.turbineId))
+      const hit = hits.find(item => item.object.userData.turbineId || item.object.userData.turbineTowerInstances)
+      if (!hit) return
+      if (hit.instanceId != null && hit.object.userData.turbineTowerInstances) {
+        const turbine = dataRef.current[hit.instanceId]
+        if (turbine) onSelect(turbine.id)
+      } else if (hit.object.userData.turbineId) {
+        onSelect(String(hit.object.userData.turbineId))
+      }
     }
     renderer.domElement.addEventListener('pointerdown', onPointerDown)
     renderer.domElement.addEventListener('pointerup', onPointerUp)
@@ -798,6 +987,10 @@ export default function SandboxScene({
       nacelleGeometry.dispose()
       hubGeometry.dispose()
       warningGeometry.dispose()
+      towerInstancedRef.current?.dispose()
+      towerInstancedRef.current = null
+      closeupRootRef.current = null
+      applyTurbineModelViewRef.current = null
       renderer.dispose()
       mount.removeChild(renderer.domElement)
       mount.removeChild(labelRenderer.domElement)
@@ -1119,6 +1312,7 @@ export default function SandboxScene({
       const label = labelMapRef.current.get(id)
       if (label) label.element.classList.toggle('selected', selected)
     })
+    applyTurbineModelViewRef.current?.()
   }, [selectedId])
 
   return (
