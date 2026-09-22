@@ -166,9 +166,13 @@ function sampleDemGrid(x: number, z: number, grid: DemGrid): number | null {
   const y1 = Math.min(grid.rows - 1, y0 + 1)
   const tx = fx - x0
   const ty = fy - y0
-  const top = grid.heights[y0 * grid.columns + x0] * (1 - tx) + grid.heights[y0 * grid.columns + x1] * tx
-  const bottom = grid.heights[y1 * grid.columns + x0] * (1 - tx) + grid.heights[y1 * grid.columns + x1] * tx
-  const elevation = top * (1 - ty) + bottom * ty
+  const topLeft = grid.heights[y0 * grid.columns + x0]
+  const topRight = grid.heights[y0 * grid.columns + x1]
+  const bottomLeft = grid.heights[y1 * grid.columns + x0]
+  const bottomRight = grid.heights[y1 * grid.columns + x1]
+  const elevation = ty >= tx
+    ? topLeft + (bottomRight - topLeft) * tx + (bottomLeft - topLeft) * (ty - tx)
+    : topLeft + (bottomRight - topLeft) * ty + (topRight - topLeft) * (tx - ty)
   return Math.max(0.8, (elevation - grid.minElevation) / METERS_PER_SCENE_UNIT * ELEVATION_EXAGGERATION + 1)
 }
 

@@ -840,7 +840,7 @@ export default function SandboxScene({
       if (!turbine) return
       const ground = terrainHeight(turbine.x, turbine.z)
       const target = new THREE.Vector3(turbine.x, ground + TOWER_HEIGHT_UNITS, turbine.z)
-      const offset = new THREE.Vector3(7.5, 4.2, 8.4)
+      const offset = new THREE.Vector3(8.4, 5.2, -14.4)
       controls.minDistance = 3
       controls.target.copy(target)
       camera.position.copy(target).add(offset)
