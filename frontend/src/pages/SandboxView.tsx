@@ -61,6 +61,10 @@ function liveTurbine(turbine: BaseTurbine, index: number, seconds: number): Scen
 }
 
 const STATUS_TEXT = { running: '运行', warning: '预警', fault: '故障' } as const
+const ENTITY_LABELS = {
+  transport_crew: '运输队', crane: '吊装机', production_equipment: '生产设备',
+  storage_unit: '储能', transmission_line: '输电', wind_turbine_site: '机位',
+} as const
 
 export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandbox' | 'gis') => void }) {
   const [farms, setFarms] = useState<FarmOption[]>([])
@@ -93,6 +97,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   const demAbortRef = useRef<AbortController | null>(null)
   const terrainVersionRef = useRef(0)
   const periodRequestRef = useRef(0)
+  const terrainReady = terrainState.status !== 'loading' && sceneProjection !== null
 
   const showFarm = useCallback(async (farmId: string, farmTurbines: Turbine[], periodValue: string) => {
     demAbortRef.current?.abort()
@@ -200,7 +205,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   }, [simulationEnabled])
 
   useEffect(() => {
-    if (!simulationEnabled || !simulationPlaying) return
+    if (!simulationEnabled || !simulationPlaying || !terrainReady) return
     let active = true
     const advance = async () => {
       try {
@@ -443,7 +448,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           focusRequest={focusRequest}
           basemapMode={basemapMode}
           mapFeatures={mapFeatures}
-          simulationEntities={simulationEnabled ? sceneSimulationEntities : []}
+          simulationEntities={simulationEnabled && terrainReady ? sceneSimulationEntities : []}
           cameraMode={cameraMode}
           simulationEnabled={simulationEnabled}
           onSimulationEnabledChange={setSimulationEnabled}
@@ -464,10 +469,15 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
             </div>
             {sceneSimulationEntities.slice(0, 8).map(entity => (
               <div key={entity.id} className="entity-pill" data-active={entity.id === selectedId} onClick={() => setSelectedId(entity.id)}>
-                <span>{entity.name}</span><small>{entity.progress.toFixed(0)}%</small>
+                <span>{ENTITY_LABELS[entity.type]}</span><small>{entity.progress.toFixed(0)}%</small>
               </div>
             ))}
-            {selectedSimulation && <small>SOC {(Number(selectedSimulation.payload?.soc ?? 0) * 100).toFixed(0)}% · flow {Number(selectedSimulation.payload?.flow_mw ?? 0).toFixed(0)}MW</small>}
+            {selectedSimulation && (
+              <div className="hud-status">
+                <span>SOC {(Number(selectedSimulation.payload?.soc ?? 0) * 100).toFixed(0)}%</span>
+                <span>FLOW {Number(selectedSimulation.payload?.flow_mw ?? 0).toFixed(0)}MW</span>
+              </div>
+            )}
           </div>
         )}
 

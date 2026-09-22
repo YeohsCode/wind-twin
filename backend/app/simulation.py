@@ -81,7 +81,9 @@ def ensure_default_entities(db: Session) -> list[SimulationEntity]:
     if entities:
         return entities
     get_state(db)
-    project = db.query(Project).filter(Project.status == "construction").order_by(Project.id).first()
+    project = db.get(Project, "P-09")
+    if project is None:
+        project = db.query(Project).filter(Project.status == "construction").order_by(Project.id).first()
     if project is None:
         project = db.query(Project).order_by(Project.id).first()
     if project is None:
@@ -106,7 +108,7 @@ def ensure_default_entities(db: Session) -> list[SimulationEntity]:
         {
             "factory_id": factory.id,
             "inventory": {"tower": 0, "nacelle": 0, "blade": 0},
-            "rates_per_hour": {"tower": 0.25, "nacelle": 0.25, "blade": 0.25},
+            "rates_per_hour": {"tower": 0.5, "nacelle": 0.5, "blade": 0.5},
             "components": ["塔段", "机舱", "叶片"],
         },
     ))
@@ -115,7 +117,7 @@ def ensure_default_entities(db: Session) -> list[SimulationEntity]:
         {
             **route_payload,
             "factory_id": factory.id,
-            "speed_km_h": 35,
+            "speed_km_h": 55,
             "direction": "return",
             "elapsed_hours": 0,
             "cargo": None,
@@ -171,7 +173,7 @@ def reset_entities(db: Session, preset: str = "nayong-72h") -> list[SimulationEn
     transport = next(row for row in entities if row.type == "transport_crew")
     storage = next(row for row in entities if row.type == "storage_unit")
     presets = {
-        "nayong-72h": {"rate": 0.25, "speed": 35.0},
+        "nayong-72h": {"rate": 0.5, "speed": 55.0},
         "urgent-48h": {"rate": 0.48, "speed": 58.0},
         "storage-cycle-96h": {"rate": 0.38, "speed": 48.0},
     }
@@ -243,7 +245,7 @@ def _normalize_production(entity: SimulationEntity) -> None:
     rates = entity.payload.setdefault("rates_per_hour", {})
     for component in COMPONENTS:
         inventory.setdefault(component, 0)
-        rates.setdefault(component, 0.25)
+        rates.setdefault(component, 0.5)
 
 
 def _deterministic_profile(hour_index: int) -> tuple[float, float]:
@@ -508,7 +510,7 @@ def _advance_one_tick(db: Session, state: SimulationState) -> None:
             else:
                 next_stage = COMPONENTS[next_index]
                 site.payload["stage"] = next_stage
-    elif crane.status == "idle" and crane.payload["direction"] == "outbound" and sum(site.payload["stock"].values()) >= 3:
+    elif crane.status == "idle" and crane.payload["direction"] == "outbound":
         crane.target_id = site.id
         crane.status = "moving"
         crane.payload["direction"] = "outbound"

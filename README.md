@@ -131,6 +131,49 @@ curl -fsS http://127.0.0.1:8000/api/turbines/wf-nayong-T20/history | python3 -m 
 
 本仓库实测截图已包含 terrain、instanced 森林、风机、WT 标签、工具条和完整仪表盘布局。
 
+### 战区推演
+
+默认场景是「纳雍示范场 72h 全链路推演」。后端固定选择 `wf-nayong` 关联的
+纳雍项目与既有运输路线，确定性推进以下闭环：
+
+```text
+工厂产件 → 大部件运输 → 山地机位三段吊装 → 并网发电 → 储能充放 → 输电送出
+```
+
+72 小时内机位完成并网，随后小时序列展示 SOC、电价和线路潮流。GIS 默认聚焦纳雍，
+自动播放，并保留风场、升压站、物流路线、实体和电力流这一组“战区感”图层；
+普通规划图层先收起，用户可随时在右侧图层开关恢复。3D 推演会等待 DEM /
+程序地形 ready 后才投影和移动实体，避免加载中悬空；左上角实体列表固定百分比列宽，
+SOC / 潮流摘要有独立分隔行。
+
+手动验证：
+
+```bash
+# 1) 两个终端分别启动
+cd backend && source .venv/bin/activate && uvicorn app.main:app --host 127.0.0.1 --port 8000
+npm --prefix frontend run dev -- --host 127.0.0.1 --port 5173
+
+# 2) 校验默认剧本重置后 72 小时可并网
+curl -fsS -X POST 'http://127.0.0.1:8000/api/simulation/reset?preset=nayong-72h' >/dev/null
+curl -fsS -X POST 'http://127.0.0.1:8000/api/simulation/tick' \
+  -H 'content-type: application/json' \
+  -d '{"steps":72,"step_hours":1,"start_time":"2027-01-01T00:00:00Z"}' \
+  | python3 -c 'import json,sys; d=json.load(sys.stdin); e={x["type"]:x for x in d["entities"]}; print(d["state"]["tick_count"], e["wind_turbine_site"]["status"], e["storage_unit"]["payload"]["soc"], e["transmission_line"]["payload"]["flow_mw"])'
+
+# 3) GIS 推演截图（默认自动聚焦纳雍；如需查看 3D，先点工具条“推演”）
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --use-gl=swiftshader --enable-unsafe-swiftshader \
+  --screenshot=report/p5-screens/nayong-72h-gis.png --window-size=1600,900 \
+  --virtual-time-budget=9000 http://127.0.0.1:5173/gis
+"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+  --headless=new --use-gl=swiftshader --enable-unsafe-swiftshader \
+  --screenshot=report/p5-screens/nayong-72h-sandbox.png --window-size=1600,900 \
+  --virtual-time-budget=12000 http://127.0.0.1:5173/
+```
+
+无显示器环境使用 `--use-gl=swiftshader --enable-unsafe-swiftshader`。GIS 截图应看到
+实体、路线流动、纳雍聚焦与电力流；3D 截图应看到真实 DEM、实体/吊装对象与推演 HUD。
+
 ### 真实 DEM / 地形沙盘
 
 沙盘页现在支持按风场切换。前端用风机 Web-Mercator 包围盒选择 terrarium DEM
@@ -210,6 +253,9 @@ curl -fsS -X POST http://127.0.0.1:8000/api/reports \
 | GET | `/api/wind-farms` | 风场与统计 |
 | GET | `/api/turbines?period=2027-Q3` | 风机 + 运行数据 |
 | GET | `/api/turbines/{id}/history` | 风机周期遥测与告警 |
+| POST | `/api/simulation/reset` | 重置战区推演场景 |
+| POST | `/api/simulation/tick` | 推进仿真并返回实体快照 |
+| GET | `/api/simulation/timeseries` | 电价 / 负荷 / 出力 / 储能序列 |
 | GET | `/api/projects` | 项目 |
 | GET | `/api/transport-routes` | 物流路线 |
 | POST | `/api/scenarios` | 创建 Scenario |

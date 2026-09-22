@@ -146,9 +146,13 @@ table { width:100%; border-collapse: collapse; font-size:11px; } th,td { padding
 .intervention-row button { height: 28px; border: 1px solid rgba(56,189,248,.2); border-radius: 7px; background: rgba(6,18,31,.8); color: #a9ddf5; cursor: pointer; font-size: 11px; }
 .intervention-row button:hover { color: #04121e; background: #7dd3fc; }
 .camera-mode-group { display: flex; gap: 4px; } .camera-mode-group button { width: 44px; }
-.simulation-hud { position: absolute; left: 12px; top: 82px; z-index: 5; display: grid; gap: 5px; padding: 9px; min-width: 172px; border: 1px solid rgba(104,237,186,.18); border-radius: 8px; background: rgba(2,11,10,.78); backdrop-filter: blur(12px); color: #9adbc4; font-size: 10px; }
+.simulation-hud { position: fixed; left: 332px; top: 178px; z-index: 5; display: grid; gap: 5px; width: 236px; padding: 10px; border: 1px solid rgba(104,237,186,.18); border-radius: 10px; background: rgba(2,11,10,.82); backdrop-filter: blur(12px); color: #9adbc4; font-size: 10px; box-shadow: 0 10px 34px rgba(0,0,0,.38); }
 .simulation-hud b { color: #dff9ec; font-size: 11px; }
-.entity-pill { display: flex; justify-content: space-between; gap: 8px; cursor: pointer; opacity: .74; } .entity-pill[data-active="true"] { opacity: 1; color: #7df3c4; }
+.entity-pill { display: grid; grid-template-columns: minmax(0, 1fr) 40px; align-items: center; gap: 8px; cursor: pointer; opacity: .74; } .entity-pill[data-active="true"] { opacity: 1; color: #7df3c4; }
+.entity-pill span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.entity-pill small { color: #bfffdf; font: 700 10px/1 ui-monospace, SFMono-Regular, monospace; text-align: right; }
+.hud-status { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 3px; padding-top: 8px; border-top: 1px solid rgba(104,237,186,.16); }
+.hud-status span { color: #c9f7e2; font: 700 9px/1 ui-monospace, SFMono-Regular, monospace; white-space: nowrap; }
 .entity-detail { display: grid; gap: 10px; }
 .entity-detail-head { display: flex; justify-content: space-between; align-items: start; }
 .entity-detail-head small { display: block; margin-bottom: 3px; color: var(--muted); font-size: 10px; letter-spacing: 1px; }

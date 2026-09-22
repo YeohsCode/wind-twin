@@ -5,7 +5,7 @@ import { api } from '../api'
 import type { AIResult, Alert, Factory, Plan, Project, Region, Route, SceneAction, SimulationEntity, SimulationState, SimulationTimeseries, Substation, Turbine, WindFarm } from '../types'
 import type { TurbineHistory } from '../api'
 
-const ALL_LAYERS = { regions: true, heat: true, windFarms: true, turbines: true, projects: true, factories: true, substations: true, routes: true, alerts: true, entities: true, powerFlow: true }
+const ALL_LAYERS = { regions: false, heat: false, windFarms: true, turbines: false, projects: false, factories: false, substations: true, routes: true, alerts: false, entities: true, powerFlow: true }
 const DEFAULT_PERIOD = '2027-Q3'
 const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
 const PLAYBACK_INTERVALS = { 1: 5000, 10: 500, 60: 120, 100: 40 } as const
@@ -62,11 +62,15 @@ export default function GisView() {
         api.regions(), api.windFarms(), api.turbines(initialPeriod), api.factories(),
         api.projects(), api.substations(), api.routes(), api.alerts(),
       ])
-      const [simulationEntities, simulationTimeseries] = await Promise.all([api.simulationEntities(), api.simulationTimeseries(72)])
+      const [simulationResult, simulationTimeseries] = await Promise.all([
+        api.simulationReset('nayong-72h'), api.simulationTimeseries(72),
+      ])
       if (!mounted) return
       setOverview(overview); setPeriod(initialPeriod); setRegions(rg); setFarms(wf); setAllTurbines(tf); setFactories(fc); setProjects(pr)
       setSubstations(ss); setRoutes(rt); setAlerts(al)
-      setEntities(simulationEntities); setSimulationState(null); setTimeseries(simulationTimeseries)
+      setEntities(simulationResult.entities); setSimulationState(simulationResult.state)
+      setTimeseries(simulationTimeseries)
+      setFocusRegion('north-china'); setFocusFarm('wf-nayong'); setPlaying(true)
     }
     load().catch(() => setToast('后端服务未连接，请先启动 API'))
     return () => { mounted = false }
@@ -205,6 +209,10 @@ export default function GisView() {
     try {
       const result = applySimulationResult(await api.simulationReset(key))
       if (key === 'storage-cycle-96h') setSelectedEntity(result.entities.find(entity => entity.type === 'storage_unit') ?? null)
+      if (key === 'nayong-72h') {
+        setFocusRegion('north-china'); setFocusFarm('wf-nayong')
+        setLayers({ ...ALL_LAYERS })
+      }
       setSimError(''); setPlaying(true)
     } catch { setSimError('场景重置失败') }
     setBusy('')
@@ -274,11 +282,7 @@ export default function GisView() {
     transport_crew: '运输队', crane: '吊装机', production_equipment: '生产设备',
     storage_unit: '储能', transmission_line: '输电线路', wind_turbine_site: '机位',
   }[entity.type] ?? entity.type)
-  const ownerLabel = selectedEntity ? [
-    farms.find(farm => farm.id === selectedEntity.owner_id)?.name,
-    projects.find(project => project.id === selectedEntity.owner_id)?.name,
-    factories.find(factory => factory.id === selectedEntity.owner_id)?.name,
-  ].find(Boolean) ?? selectedEntity.owner_id : '—'
+  const ownerLabel = selectedEntity ? selectedEntity.target_id ?? selectedEntity.id : '—'
   const priceOption = useMemo(() => ({
     backgroundColor: 'transparent',
     tooltip: { trigger: 'axis', valueFormatter: (value: number) => `${value?.toFixed(1)} 元/MWh` },
@@ -310,7 +314,7 @@ export default function GisView() {
       <div className="level-crumbs">
         <button className={!focusRegion && !focusFarm ? 'active' : ''} onClick={() => breadcrumbTo('country')}>中国</button>
         {focusRegion && <><span>›</span><button className={!focusFarm ? 'active' : ''} onClick={() => breadcrumbTo('province')}>{regions.find(r => r.id === focusRegion)?.name}</button></>}
-        {focusFarm && <><span>›</span><button className="active">{selectedFarm?.name}</button></>}
+        {focusFarm && <><span>›</span><button className={focusFarm ? 'active' : ''}>{selectedFarm?.name}</button></>}
       </div>
 
       <header className="topbar">
@@ -413,7 +417,7 @@ export default function GisView() {
             <h2>实体详情</h2>
             <div className="entity-detail">
               <div className="entity-detail-head">
-                <div><small>{entityLabel(selectedEntity)}</small><b>{selectedEntity.name}</b></div>
+                <div><small>{entityLabel(selectedEntity)}</small><b>{selectedEntity.id}</b></div>
                 <button onClick={() => setSelectedEntity(null)}>×</button>
               </div>
               <div className="entity-meta">

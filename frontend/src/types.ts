@@ -24,11 +24,10 @@ export type SimulationEntityType = 'transport_crew' | 'crane' | 'production_equi
 export type SimulationEntity = {
   id: string
   type: SimulationEntityType
-  name: string
   status: string
   position: [number, number]
+  target_id: string | null
   progress: number
-  owner_id: string
   payload: Record<string, any>
   updated_at: string
 }

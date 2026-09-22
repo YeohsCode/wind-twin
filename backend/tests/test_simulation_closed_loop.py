@@ -134,7 +134,7 @@ class SimulationClosedLoopTest(unittest.TestCase):
                 4,
             )
 
-            delete_response = client.delete("/api/simulation/entities/storage-wf-hohhot")
+            delete_response = client.delete(f"/api/simulation/entities/{storage['id']}")
             self.assertEqual(delete_response.status_code, 200)
             self.assertEqual(delete_response.json()["status"], "deleted")
 
