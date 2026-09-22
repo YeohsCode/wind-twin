@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from math import cos, radians, sqrt
+from math import cos, radians, sin, sqrt
 from sqlalchemy.orm.attributes import flag_modified
 
 from sqlalchemy.orm import Session
@@ -27,6 +27,8 @@ ENTITY_TYPES = {
 DEFAULT_TIME = datetime(2027, 1, 1, tzinfo=timezone.utc)
 COMPONENTS = ("tower", "nacelle", "blade")
 STAGES = {"tower": "塔筒", "nacelle": "机舱", "blade": "叶片"}
+PRICE_BASE_YUAN_MWH = 520
+PRICE_SUPPLY_DEMAND_FACTOR = 0.45
 
 
 def utc_naive(value: datetime) -> datetime:
@@ -215,6 +217,146 @@ def _normalize_production(entity: SimulationEntity) -> None:
         rates.setdefault(component, 0.25)
 
 
+def _deterministic_profile(hour_index: int) -> tuple[float, float]:
+    hour = hour_index % 24
+    load_shape = 0.82 + 0.18 * cos((hour - 8) * 3.141592653589793 / 12)
+    wind_shape = 0.72 + 0.28 * sin((hour_index % 72) * 3.141592653589793 / 36)
+    return round(60 * load_shape, 6), round(60 * wind_shape, 6)
+
+
+def _storage_runtimes(storage_rows: list[SimulationEntity]) -> dict[str, dict]:
+    return {
+        row.payload.get("wind_farm_id"): {
+            "capacity": max(0, float(row.payload.get("capacity_mwh", 0))),
+            "soc": min(1, max(0, float(row.payload.get("soc", 0)))),
+        }
+        for row in storage_rows if row.payload.get("wind_farm_id")
+    }
+
+
+def _storage_delta_mw(gen_mw: float, load_mw: float, hours: int,
+                      runtimes: dict[str, dict]) -> tuple[float, dict[str, float], dict[str, str]]:
+    net_mw = gen_mw - load_mw
+    energy_delta_mwh = net_mw * hours
+    active = {farm_id: state for farm_id, state in runtimes.items() if state["capacity"] > 0}
+    if not active:
+        return 0, {}, {}
+    total_capacity = sum(state["capacity"] for state in active.values())
+    total_energy = sum(state["soc"] * state["capacity"] for state in active.values())
+    if energy_delta_mwh >= 0:
+        accepted = min(energy_delta_mwh, total_capacity - total_energy)
+        mode = "charge"
+    else:
+        accepted = max(energy_delta_mwh, -total_energy)
+        mode = "discharge"
+    accepted = round(accepted, 6)
+    storage_deltas: dict[str, float] = {}
+    modes: dict[str, str] = {}
+    for farm_id, storage_state in active.items():
+        share = storage_state["capacity"] / total_capacity
+        farm_accepted = round(accepted * share, 6)
+        storage_state["soc"] = round(
+            min(1, max(0, (storage_state["soc"] * storage_state["capacity"] + farm_accepted) / storage_state["capacity"])),
+            6,
+        )
+        storage_deltas[farm_id] = round(farm_accepted / hours, 6) if hours else 0
+        modes[farm_id] = mode if abs(farm_accepted) > 1e-9 else "idle"
+    return round(sum(storage_deltas.values()), 6), storage_deltas, modes
+
+
+def _apply_storage(db: Session, gen_mw: float, load_mw: float, hours: int) -> float:
+    storage_rows = db.query(SimulationEntity).filter(
+        SimulationEntity.type == "storage_unit"
+    ).order_by(SimulationEntity.id).all()
+    runtimes = _storage_runtimes(storage_rows)
+    total_delta, farm_deltas, modes = _storage_delta_mw(gen_mw, load_mw, hours, runtimes)
+    for row in storage_rows:
+        farm_id = row.payload.get("wind_farm_id")
+        payload = row.payload
+        if farm_id in runtimes:
+            payload["soc"] = runtimes[farm_id]["soc"]
+            payload["mode"] = modes[farm_id]
+            payload["delta_mw"] = farm_deltas.get(farm_id, 0)
+            row.status = "standby" if payload["mode"] == "idle" else "active"
+        else:
+            payload["soc"] = min(1, max(0, float(payload.get("soc", 0))))
+            payload["mode"] = "idle"
+            payload["delta_mw"] = 0
+            row.status = "standby"
+    _update_power_flow(db, gen_mw - total_delta)
+    return total_delta
+
+
+def _update_power_flow(db: Session, flow_mw: float) -> None:
+    lines = db.query(SimulationEntity).filter(
+        SimulationEntity.type == "transmission_line"
+    ).order_by(SimulationEntity.id).all()
+    for line in lines:
+        capacity = max(0, float(line.payload.get("capacity_mw", 0)))
+        line.payload["flow_mw"] = round(min(capacity, max(-capacity, flow_mw)), 6)
+        line.status = "active" if abs(line.payload["flow_mw"]) > 1e-9 else "standby"
+
+
+def _grid_snapshot(db: Session, state: SimulationState, apply_storage: bool = False) -> dict:
+    start = state.current_time.replace(minute=0, second=0, microsecond=0)
+    epoch = datetime(2027, 1, 1)
+    hour_index = int((utc_naive(start) - epoch).total_seconds() // 3600)
+    load_mw, gen_mw = _deterministic_profile(hour_index)
+    if apply_storage:
+        total_storage_delta = _apply_storage(db, gen_mw, load_mw, state.step_hours)
+        storage_modes = {
+            row.payload.get("wind_farm_id"): row.payload["mode"]
+            for row in db.query(SimulationEntity).filter(SimulationEntity.type == "storage_unit").all()
+        }
+    else:
+        storage_rows = db.query(SimulationEntity).filter(
+            SimulationEntity.type == "storage_unit"
+        ).order_by(SimulationEntity.id).all()
+        runtimes = _storage_runtimes(storage_rows)
+        total_storage_delta, _, storage_modes = _storage_delta_mw(gen_mw, load_mw, 1, runtimes)
+    return {
+        "load_mw": load_mw,
+        "gen_mw": gen_mw,
+        "storage_delta": total_storage_delta,
+        "price_yuan_mwh": max(0, round(PRICE_BASE_YUAN_MWH + PRICE_SUPPLY_DEMAND_FACTOR * (load_mw - gen_mw - total_storage_delta), 6)),
+        "storage_modes": storage_modes,
+    }
+
+
+def build_timeseries(db: Session, state: SimulationState, hours: int) -> dict:
+    timestamps = []
+    prices = []
+    loads = []
+    generation = []
+    storage_deltas = []
+    cursor = state.current_time.replace(minute=0, second=0, microsecond=0)
+    epoch = datetime(2027, 1, 1)
+    start_index = int((utc_naive(cursor) - epoch).total_seconds() // 3600)
+    storage_rows = db.query(SimulationEntity).filter(
+        SimulationEntity.type == "storage_unit"
+    ).order_by(SimulationEntity.id).all()
+    runtimes = _storage_runtimes(storage_rows)
+    farm_ids = {row.id for row in db.query(WindFarm).all()}
+    runtimes = {farm_id: value for farm_id, value in runtimes.items() if farm_id in farm_ids}
+    for _ in range(hours):
+        load_mw, gen_mw = _deterministic_profile(start_index)
+        storage_delta, _, _ = _storage_delta_mw(gen_mw, load_mw, 1, runtimes)
+        timestamps.append(cursor.replace(tzinfo=timezone.utc))
+        prices.append(max(0, round(PRICE_BASE_YUAN_MWH + PRICE_SUPPLY_DEMAND_FACTOR * (load_mw - gen_mw - storage_delta), 6)))
+        loads.append(load_mw)
+        generation.append(gen_mw)
+        storage_deltas.append(storage_delta)
+        cursor += timedelta(hours=1)
+        start_index += 1
+    return {
+        "timestamps": timestamps,
+        "price_yuan_mwh": prices,
+        "load_mw": loads,
+        "gen_mw": generation,
+        "storage_delta": storage_deltas,
+    }
+
+
 def _commission_turbine(db: Session, site: SimulationEntity, state: SimulationState) -> None:
     farm_id = site.payload["wind_farm_id"]
     sequence = len(site.payload["completed_turbine_ids"]) + 1
@@ -365,9 +507,11 @@ def _advance_one_tick(db: Session, state: SimulationState) -> None:
         transport.payload["direction"] = "outbound"
         transport.target_id = site.id
 
+    _grid_snapshot(db, state, apply_storage=True)
+
     for row in entities.values():
         flag_modified(row, "payload")
-        row.updated_at = utc_naive(datetime.now(timezone.utc))
+        row.updated_at = utc_naive(state.current_time)
     state.tick_count += 1
     state.current_time += timedelta(hours=hours)
 

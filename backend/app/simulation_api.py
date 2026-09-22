@@ -1,12 +1,12 @@
 from datetime import datetime
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from .database import get_db
 from .models import SimulationEntity
 from .schemas import SimulationEntityIn, SimulationTickIn
-from .simulation import ENTITY_TYPES, advance, ensure_default_entities, get_state
+from .simulation import ENTITY_TYPES, advance, build_timeseries, ensure_default_entities, get_state
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -62,3 +62,9 @@ def tick(payload: SimulationTickIn, db: Session = Depends(get_db)):
         start_time=payload.start_time,
     )
     return {"state": serialize_state(state), "entities": entities}
+
+
+@router.get("/timeseries")
+def timeseries(hours: int = Query(ge=1, le=8760), db: Session = Depends(get_db)):
+    ensure_default_entities(db)
+    return build_timeseries(db, get_state(db), hours)
