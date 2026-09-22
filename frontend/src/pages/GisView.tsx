@@ -41,12 +41,14 @@ export default function GisView() {
   useEffect(() => {
     let mounted = true
     async function load() {
-      const [ov, rg, wf, tf, fc, pr, ss, rt, al] = await Promise.all([
-        api.overview(), api.regions(), api.windFarms(), api.turbines(DEFAULT_PERIOD), api.factories(),
+      const overview = await api.overview()
+      const initialPeriod = overview.periods?.includes(period) ? period : overview.periods?.[0] ?? DEFAULT_PERIOD
+      const [rg, wf, tf, fc, pr, ss, rt, al] = await Promise.all([
+        api.regions(), api.windFarms(), api.turbines(initialPeriod), api.factories(),
         api.projects(), api.substations(), api.routes(), api.alerts(),
       ])
       if (!mounted) return
-      setOverview(ov); setRegions(rg); setFarms(wf); setAllTurbines(tf); setFactories(fc); setProjects(pr)
+      setOverview(overview); setPeriod(initialPeriod); setRegions(rg); setFarms(wf); setAllTurbines(tf); setFactories(fc); setProjects(pr)
       setSubstations(ss); setRoutes(rt); setAlerts(al)
     }
     load().catch(() => setToast('后端服务未连接，请先启动 API'))

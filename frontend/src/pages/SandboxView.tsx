@@ -142,9 +142,12 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           lng: farm.lng,
           turbineCount: farm.turbineCount,
         }))
+      const availablePeriods = overview.periods ?? []
       setFarms(options)
       setAlerts(alertRows)
-      setPeriods(overview.periods ?? [])
+      setPeriods(availablePeriods)
+      const initialPeriod = availablePeriods.includes(period) ? period : availablePeriods[0] ?? period
+      if (initialPeriod !== period) setPeriod(initialPeriod)
       const initialId = options.find(farm => farm.id === 'wf-nayong')?.id ?? options[0]?.id
       if (initialId) setSelectedFarmId(initialId)
     }
@@ -204,6 +207,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   const equivalentToday = totalPower / Math.max(1, installedCapacity) * 167.5
   const averageRpm = turbines.length ? turbines.reduce((sum, item) => sum + item.rotorRpm, 0) / turbines.length : 0
   const planPercent = 68 + totalPower / Math.max(1, installedCapacity) * 8
+  const periodText = periodLoading ? 'SYNC…' : period
 
   const statusCounts = useMemo(() => ({
     running: turbines.filter(item => item.status === 'running').length,
@@ -295,7 +299,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
               value={Math.max(0, periods.indexOf(period))}
               onChange={event => setPeriod(periods[Number(event.target.value)])}
             />
-            <b>{periodLoading ? 'SYNC…' : period}</b>
+            <b>{periodText}</b>
           </div>
         </div>
       </header>
@@ -304,7 +308,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
         <div className="kpi-card accent">
           <small>全场实时功率</small>
           <strong>{totalPower.toFixed(2)}<em>MW</em></strong>
-          <span>装机 {installedCapacity.toFixed(1)} MW · {period} 后端数据驱动</span>
+          <span>装机 {installedCapacity.toFixed(1)} MW · {periodText} 后端数据驱动</span>
         </div>
         <div className="kpi-card">
           <small>当日累计发电</small>
