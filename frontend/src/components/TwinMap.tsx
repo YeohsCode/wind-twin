@@ -139,7 +139,7 @@ function makeStyle(): StyleSpecification {
       { id: 'satellite', type: 'raster', source: 'satellite', paint: { 'raster-opacity': 0.92, 'raster-saturation': 0.55, 'raster-contrast': 0.08 } },
       { id: 'water-fill', type: 'fill', source: 'openmap', 'source-layer': 'water', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': 'rgba(12,74,110,.72)', 'fill-outline-color': 'rgba(56,189,248,.35)' } },
       { id: 'waterway', type: 'line', source: 'openmap', 'source-layer': 'waterway', paint: { 'line-color': 'rgba(14,116,144,.75)', 'line-width': 1.2 } },
-      { id: 'admin-line', type: 'line', source: 'openmap', 'source-layer': 'boundary', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['<=', ['to-number', ['get', 'admin_level'], 99], 6]], paint: { 'line-color': 'rgba(226,232,240,.46)', 'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.5, 8, 1.6] } },
+      { id: 'admin-line', type: 'line', source: 'openmap', 'source-layer': 'boundary', filter: ['all', ['==', ['geometry-type'], 'LineString'], ['<=', ['to-number', ['get', 'admin_level'], 99], 6]], paint: { 'line-color': 'rgba(226,232,240,.22)', 'line-width': ['interpolate', ['linear'], ['zoom'], 3, 0.5, 8, 1.6] } },
       { id: 'hillshade', type: 'hillshade', source: 'terrain', paint: { 'hillshade-exaggeration': 0.35, 'hillshade-shadow-color': '#001324', 'hillshade-highlight-color': '#7dd3fc' } },
     ],
   }
@@ -189,14 +189,14 @@ export default function TwinMap(props: Props) {
       const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits', 'simulationEntities', 'powerFlow', 'powerArrows']
       geoSources.forEach(id => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: emptyFC }) })
       const initial = [
-        { id: 'region-fill', type: 'fill', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'fill-color': '#7dd3fc', 'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.06, 0.02] } },
+      { id: 'region-fill', type: 'fill', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'fill-color': '#7dd3fc', 'fill-opacity': 0 } },
         { id: 'region-heat', type: 'fill', source: 'regions', filter: ['==', ['get', 'heatKind'], 'province'], paint: {
           'fill-color': ['interpolate', ['linear'], ['coalesce', ['get', 'heatMw'], 0], 0, 'rgba(56,189,248,.03)', 800, 'rgba(56,189,248,.13)', 1800, 'rgba(132,204,22,.22)', 3200, 'rgba(249,115,22,.30)'],
           'fill-opacity': ['case', ['boolean', ['get', 'selected'], false], 0.82, 0.58],
         } },
         { id: 'region-line', type: 'line', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'line-color': 'rgba(125,211,252,.82)', 'line-width': ['case', ['boolean', ['get', 'selected'], false], 3.2, 1.4] } },
-        { id: 'farm-line', type: 'line', source: 'farms', paint: { 'line-color': ['case', ['boolean', ['get', 'selected'], false], '#7df3c4', 'rgba(56,189,248,.72)'], 'line-width': ['case', ['boolean', ['get', 'selected'], false], 4, 1.6], 'line-dasharray': [2, 1.5] } },
-        { id: 'farm-hit', type: 'fill', source: 'farms', paint: { 'fill-color': '#7df3c4', 'fill-opacity': 0.001 } },
+        { id: 'farm-line', type: 'line', source: 'farms', paint: { 'line-color': ['case', ['boolean', ['get', 'selected'], false], '#7df3c4', 'rgba(56,189,248,.72)'], 'line-width': ['case', ['boolean', ['get', 'selected'], false], 4, 2], 'line-dasharray': [2, 1.5] } },
+        { id: 'farm-hit', type: 'fill', source: 'farms', paint: { 'fill-color': '#7df3c4', 'fill-opacity': 0 } },
         { id: 'route-glow', type: 'line', source: 'routes', paint: { 'line-color': ['get', 'color'], 'line-width': 7, 'line-opacity': 0.14, 'line-blur': 3 } },
         { id: 'route-line', type: 'line', source: 'routes', paint: { 'line-color': ['get', 'color'], 'line-width': ['case', ['boolean', ['get', 'active'], false], 3.4, 1.2], 'line-opacity': ['case', ['boolean', ['get', 'active'], false], 0.95, 0.32], 'line-dasharray': [1.2, 1.5] } },
         { id: 'project-bars', type: 'fill-extrusion', source: 'projects', paint: { 'fill-extrusion-color': ['get', 'color'], 'fill-extrusion-height': ['get', 'height'], 'fill-extrusion-base': 1620, 'fill-extrusion-opacity': 0.82 } },
@@ -391,7 +391,7 @@ export default function TwinMap(props: Props) {
     const map = mapRef.current
     if (!map || !readyRef.current) return
   const states: Record<string, string[]> = {
-      regions: ['region-fill', 'region-line'], heat: ['region-heat'], windFarms: ['farm-line', 'farm-point'],
+      regions: ['region-fill', 'region-line'], heat: ['region-heat'], windFarms: ['farm-point'],
       substations: ['substation-point'], projects: ['project-bars'],
       factories: ['factory-point'], routes: ['route-line', 'route-glow'], alerts: ['alert-point'],
       entities: ['simulation-icons', 'simulation-hit'], powerFlow: ['power-flow-glow', 'power-flow-line', 'power-flow-arrow'],
@@ -399,7 +399,36 @@ export default function TwinMap(props: Props) {
     Object.entries(states).forEach(([key, layerIds]) => layerIds.forEach(id => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', props.layers[key] ? 'visible' : 'none')
     }))
-  }, [readyTick, props.layers])
+
+    let hoveredFarmId: string | null = null
+    const updateFarmBoundary = () => {
+      if (!map.getLayer('farm-line')) return
+      map.setFilter('farm-line', [
+        'any',
+        ['==', ['get', 'id'], ['literal', props.focusFarm ?? '__none__']],
+        ['==', ['get', 'id'], ['literal', hoveredFarmId ?? '__none__']],
+      ])
+      const showBoundary = props.layers.farmBoundary || props.focusFarm || hoveredFarmId
+      map.setLayoutProperty('farm-line', 'visibility', showBoundary ? 'visible' : 'none')
+      if (props.layers.farmBoundary) map.setFilter('farm-line', ['all'])
+    }
+    updateFarmBoundary()
+    const handleFarmHover = (event: maplibregl.MapMouseEvent) => {
+      const hits = map.queryRenderedFeatures(event.point, { layers: ['farm-hit', 'farm-point'] })
+      hoveredFarmId = (hits[0]?.properties?.id as string | undefined) ?? null
+      updateFarmBoundary()
+    }
+    const clearFarmHover = () => {
+      hoveredFarmId = null
+      updateFarmBoundary()
+    }
+    map.on('mousemove', handleFarmHover)
+    map.on('mouseout', clearFarmHover)
+    return () => {
+      map.off('mousemove', handleFarmHover)
+      map.off('mouseout', clearFarmHover)
+    }
+  }, [readyTick, props.layers, props.focusFarm])
 
   useEffect(() => {
     const map = mapRef.current

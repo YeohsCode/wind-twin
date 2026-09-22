@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { METERS_PER_SCENE_UNIT } from './demSource'
 import { activeTerrainProjection, projectToScene, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
@@ -53,7 +54,7 @@ type Props = {
   onBasemapModeChange: (mode: Props['basemapMode']) => void
 }
 
-const TOWER_HEIGHT_UNITS = 100 / METERS_PER_SCENE_UNIT
+const TOWER_HEIGHT_UNITS = 160 / METERS_PER_SCENE_UNIT
 const NACELLE_LENGTH_UNITS = 22 / METERS_PER_SCENE_UNIT
 const ROTOR_RADIUS_UNITS = 58 / METERS_PER_SCENE_UNIT
 function basemapZoom(sideMeters: number) {
@@ -64,6 +65,8 @@ function basemapZoom(sideMeters: number) {
 function lngToTile(lng: number, zoom: number) {
   return Math.floor(((lng + 180) / 360) * 2 ** zoom)
 }
+
+type SimulationModelCache = Partial<Record<'truck', THREE.Group>>
 
 function latToTile(lat: number, zoom: number) {
   const rad = lat * Math.PI / 180
@@ -141,6 +144,7 @@ export default function SandboxScene({
   const simulationSiteAssembliesRef = useRef(new Map<string, { tower: THREE.Mesh; nacelle: THREE.Group; rotor: THREE.Group; pad: THREE.Mesh }>())
   const simulationEntitiesRef = useRef(simulationEntities)
   const rebuildSimulationRef = useRef<(() => void) | null>(null)
+  const simulationModelsRef = useRef<SimulationModelCache>({})
   const cameraModeRef = useRef(cameraMode)
   const selectedEntityRef = useRef(selectedId)
 
@@ -288,8 +292,14 @@ export default function SandboxScene({
     towerGeometry.translate(0, TOWER_HEIGHT_UNITS / 2, 0)
     const nacelleGeometry = new THREE.BoxGeometry(NACELLE_LENGTH_UNITS, 0.28, 0.24)
     const hubGeometry = new THREE.SphereGeometry(0.16, 16, 12)
-    const bladeGeometry = new THREE.BoxGeometry(0.055, ROTOR_RADIUS_UNITS, 0.035)
-    bladeGeometry.translate(0, ROTOR_RADIUS_UNITS / 2, 0)
+    const bladeProfile = new THREE.Shape()
+    bladeProfile.moveTo(0, 0)
+    bladeProfile.quadraticCurveTo(0.045, ROTOR_RADIUS_UNITS * 0.42, 0.012, ROTOR_RADIUS_UNITS)
+    bladeProfile.lineTo(-0.018, ROTOR_RADIUS_UNITS)
+    bladeProfile.quadraticCurveTo(-0.038, ROTOR_RADIUS_UNITS * 0.42, -0.032, 0)
+    bladeProfile.closePath()
+    const bladeGeometry = new THREE.ExtrudeGeometry(bladeProfile, { depth: 0.032, bevelEnabled: false })
+    bladeGeometry.translate(0, 0, -0.016)
     const warningGeometry = new THREE.SphereGeometry(0.12, 10, 8)
 
     const buildTurbines = () => {
@@ -367,7 +377,22 @@ export default function SandboxScene({
     const lowPolyMaterial = (color: string, options: Partial<THREE.MeshStandardMaterialParameters> = {}) => new THREE.MeshStandardMaterial({
       color, roughness: 0.58, metalness: 0.12, ...options,
     })
+    const cloneSimulationModel = (model: THREE.Group) => {
+      const clone = model.clone(true)
+      clone.traverse(child => {
+        const mesh = child as THREE.Mesh
+        if (mesh.isMesh) {
+          mesh.material = Array.isArray(mesh.material)
+            ? mesh.material.map(material => material.clone())
+            : mesh.material.clone()
+          mesh.userData.sharedModel = true
+        }
+      })
+      return clone
+    }
     const makeTruck = () => {
+      const model = simulationModelsRef.current.truck
+      if (model) return cloneSimulationModel(model)
       const group = new THREE.Group()
       const body = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.16, 0.24), lowPolyMaterial('#3fa9f5'))
       body.position.y = 0.17
@@ -386,30 +411,54 @@ export default function SandboxScene({
     }
     const makeCrane = () => {
       const group = new THREE.Group()
-      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.1, 6), lowPolyMaterial('#475569'))
-      base.position.y = 0.05
-      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.95, 6), lowPolyMaterial('#fbbf24'))
-      mast.position.y = 0.55
-      const boom = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 1.15), lowPolyMaterial('#f8fafc'))
-      boom.position.set(0, 1.02, -0.34)
+      const crawlerMaterial = lowPolyMaterial('#39424e', { roughness: 0.7, metalness: 0.18 })
+      const craneMaterial = lowPolyMaterial('#f4b429', { roughness: 0.45, metalness: 0.16 })
+      const steelMaterial = lowPolyMaterial('#e7edf3', { roughness: 0.38, metalness: 0.22 })
+      for (const offset of [-0.16, 0.16]) {
+        const track = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.16, 0.24), crawlerMaterial)
+        track.position.set(0, 0.09, offset)
+        group.add(track)
+      }
+      const carBody = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.17, 0.42), craneMaterial)
+      carBody.position.y = 0.25
+      const counterweight = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.28, 0.40), lowPolyMaterial('#556270'))
+      counterweight.position.set(-0.24, 0.38, 0)
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.13, 0.15), lowPolyMaterial('#243447', { roughness: 0.24, metalness: 0.04 }))
+      cab.position.set(0.21, 0.39, 0.14)
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.032, 0.38, 8), steelMaterial)
+      mast.position.set(0.16, 0.55, 0)
+      const boom = new THREE.Group()
+      boom.position.set(0.16, 0.62, 0)
+      const boomSection = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.11, 3.33), steelMaterial)
+      boomSection.position.z = -3.33 / 2
+      const boomTip = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.07, 0.34), craneMaterial)
+      boomTip.position.z = -3.45
+      boom.add(boomSection, boomTip)
       const assembly = new THREE.Group()
       assembly.userData.isCraneAssembly = true
-      const componentMaterial = lowPolyMaterial('#e2e8f0')
-      const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.04, 0.55, 8), componentMaterial)
-      tower.position.y = 0.275
+      const componentMaterial = lowPolyMaterial('#eef4f7', { roughness: 0.42, metalness: 0.05 })
+      const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.044, 0.34, 12), componentMaterial)
+      tower.position.y = 0.17
       const nacelle = new THREE.Group()
-      nacelle.add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.08), componentMaterial))
-      nacelle.position.y = 0.58
+      nacelle.add(new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.1, 0.1), componentMaterial))
+      nacelle.position.y = 0.36
       const rotor = new THREE.Group()
-      const bladeGeometry = new THREE.BoxGeometry(0.015, 0.24, 0.012)
-      bladeGeometry.translate(0, 0.12, 0)
+      const bladeProfile = new THREE.Shape()
+      bladeProfile.moveTo(0, 0)
+      bladeProfile.quadraticCurveTo(0.028, 0.5, 0.008, 1.18)
+      bladeProfile.lineTo(-0.012, 1.18)
+      bladeProfile.quadraticCurveTo(-0.024, 0.5, -0.018, 0)
+      bladeProfile.closePath()
+      const bladeGeometry = new THREE.ExtrudeGeometry(bladeProfile, { depth: 0.02, bevelEnabled: false })
+      bladeGeometry.translate(0, 0, -0.01)
       for (let index = 0; index < 3; index += 1) rotor.add(new THREE.Mesh(bladeGeometry, componentMaterial))
       rotor.children.forEach((blade, index) => { blade.rotation.x = index * Math.PI * 2 / 3 })
-      rotor.position.z = -0.1
+      rotor.position.z = -0.12
       nacelle.add(rotor)
       assembly.add(tower, nacelle)
-      assembly.position.set(0, 1.05, -0.72)
-      group.add(base, mast, boom, assembly)
+      assembly.position.set(0.16, 0.65, -2.55)
+      group.add(carBody, counterweight, cab, mast, boom, assembly)
+      group.userData.craneBoom = boom
       return { group, tower, nacelle, rotor, assembly }
     }
     const makeStorage = () => {
@@ -429,18 +478,24 @@ export default function SandboxScene({
       const pad = new THREE.Mesh(new THREE.CircleGeometry(0.8, 16), lowPolyMaterial('#77836f', { transparent: true, opacity: 0.5 }))
       pad.rotation.x = -Math.PI / 2
       pad.position.y = 0.025
-      const componentMaterial = lowPolyMaterial('#eef4f6')
-      const towerGeometry = new THREE.CylinderGeometry(0.035, 0.06, TOWER_HEIGHT_UNITS * 0.24, 8)
-      towerGeometry.translate(0, TOWER_HEIGHT_UNITS * 0.12, 0)
+      const componentMaterial = lowPolyMaterial('#eef4f6', { roughness: 0.42, metalness: 0.05 })
+      const towerGeometry = new THREE.CylinderGeometry(0.07, 0.12, TOWER_HEIGHT_UNITS, 14)
+      towerGeometry.translate(0, TOWER_HEIGHT_UNITS / 2, 0)
       const tower = new THREE.Mesh(towerGeometry, componentMaterial)
       const nacelle = new THREE.Group()
-      nacelle.add(new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.1), componentMaterial))
+      nacelle.add(new THREE.Mesh(new THREE.BoxGeometry(NACELLE_LENGTH_UNITS, 0.2, 0.18), componentMaterial))
       const rotor = new THREE.Group()
-      const bladeGeometry = new THREE.BoxGeometry(0.022, ROTOR_RADIUS_UNITS * 0.24, 0.015)
-      bladeGeometry.translate(0, ROTOR_RADIUS_UNITS * 0.12, 0)
+      const bladeProfile = new THREE.Shape()
+      bladeProfile.moveTo(0, 0)
+      bladeProfile.quadraticCurveTo(0.042, ROTOR_RADIUS_UNITS * 0.42, 0.012, ROTOR_RADIUS_UNITS)
+      bladeProfile.lineTo(-0.016, ROTOR_RADIUS_UNITS)
+      bladeProfile.quadraticCurveTo(-0.034, ROTOR_RADIUS_UNITS * 0.42, -0.03, 0)
+      bladeProfile.closePath()
+      const bladeGeometry = new THREE.ExtrudeGeometry(bladeProfile, { depth: 0.026, bevelEnabled: false })
+      bladeGeometry.translate(0, 0, -0.013)
       for (let index = 0; index < 3; index += 1) rotor.add(new THREE.Mesh(bladeGeometry, componentMaterial))
       rotor.children.forEach((blade, index) => { blade.rotation.x = index * Math.PI * 2 / 3 })
-      rotor.position.z = -0.12
+      rotor.position.z = -NACELLE_LENGTH_UNITS * 0.45
       nacelle.add(rotor)
       group.add(pad, tower, nacelle)
       return { group, tower, nacelle, rotor, pad }
@@ -450,7 +505,7 @@ export default function SandboxScene({
         scene.remove(simulationGroupRef.current)
         simulationGroupRef.current.traverse(child => {
           const mesh = child as THREE.Mesh
-          if (mesh.isMesh) {
+          if (mesh.isMesh && !mesh.userData.sharedModel) {
             mesh.geometry.dispose()
             ;(mesh.material as THREE.Material)?.dispose()
           }
@@ -506,6 +561,46 @@ export default function SandboxScene({
     }
     buildSimulation()
     rebuildSimulationRef.current = buildSimulation
+
+    let modelLoadCancelled = false
+    let modelLoadTimer = 0
+    const loadSimulationModels = () => new Promise<void>((resolve, reject) => {
+      const timeout = window.setTimeout(() => reject(new Error('model load timeout')), 12_000)
+      modelLoadTimer = timeout
+      new GLTFLoader().load(
+        '/models/truck-flat.glb',
+        gltf => {
+          window.clearTimeout(timeout)
+          const source = gltf.scene
+          const measurement = new THREE.Group()
+          measurement.add(source)
+          measurement.updateMatrixWorld(true)
+          const bounds = new THREE.Box3().setFromObject(measurement)
+          const center = bounds.getCenter(new THREE.Vector3())
+          const size = bounds.getSize(new THREE.Vector3())
+          source.position.set(-center.x, -bounds.min.y, -center.z)
+          const normalized = new THREE.Group()
+          const scaler = new THREE.Group()
+          scaler.scale.setScalar(16 / Math.max(size.z, Number.EPSILON))
+          scaler.rotation.y = Math.PI / 2
+          scaler.add(source)
+          normalized.add(scaler)
+          simulationModelsRef.current.truck = normalized
+          resolve()
+        },
+        undefined,
+        reject,
+      )
+    })
+
+    loadSimulationModels()
+      .then(() => {
+        if (!modelLoadCancelled) rebuildSimulationRef.current?.()
+      })
+      .catch(() => {
+        if (!modelLoadCancelled) simulationModelsRef.current.truck = undefined
+      })
+      .finally(() => window.clearTimeout(modelLoadTimer))
 
     const fitCamera = () => {
       const points: ScenePoint[] = dataRef.current.length
@@ -711,6 +806,7 @@ export default function SandboxScene({
       controlsRef.current = null
       focusNacelleRef.current = null
       rebuildSimulationRef.current = null
+      simulationModelsRef.current = {}
     }
     // A terrain version change deliberately rebuilds the WebGL scene around the new DEM extent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -936,6 +1032,9 @@ export default function SandboxScene({
         const showNacelle = Boolean(stock.nacelle || stage === 'nacelle')
         const showRotor = Boolean(stock.blade || stage === 'blade')
         const assembly = (object as THREE.Group).children.find(child => child.userData?.isCraneAssembly)
+        const craneBoom = (object as THREE.Group).userData?.craneBoom as THREE.Group | undefined
+        const stagedProgress = Math.max(0, Math.min(1, Number(siteEntity?.payload?.stage_progress ?? entity.progress / 100)))
+        if (craneBoom) craneBoom.rotation.y = moving ? 0.18 + stagedProgress * 0.22 : 0.72 - stagedProgress * 0.36
         if (assembly) {
           assembly.children[0].visible = showTower
           assembly.children[1].visible = showNacelle || showRotor
@@ -958,7 +1057,9 @@ export default function SandboxScene({
           assembly.tower.scale.y = towerRise
           assembly.tower.visible = towerRise > 0.045
           assembly.nacelle.visible = complete || stage === 'nacelle' || stage === 'blade'
-          assembly.nacelle.position.y = TOWER_HEIGHT_UNITS * (stage === 'nacelle' ? 0.18 + progress * 0.06 : 0.24)
+          assembly.nacelle.position.y = stage === 'nacelle'
+            ? TOWER_HEIGHT_UNITS * (0.55 + progress * 0.45)
+            : complete ? TOWER_HEIGHT_UNITS : 0
           assembly.nacelle.rotation.y = stage === 'nacelle' ? (1 - progress) * 1.6 : 0
           assembly.rotor.visible = complete || stage === 'blade'
           assembly.rotor.rotation.z = stage === 'blade' ? -1.4 + progress * 1.4 : 0
