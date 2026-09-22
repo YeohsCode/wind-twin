@@ -158,6 +158,35 @@ def ensure_default_entities(db: Session) -> list[SimulationEntity]:
     return db.query(SimulationEntity).order_by(SimulationEntity.id).all()
 
 
+def reset_entities(db: Session, preset: str = "nayong-72h") -> list[SimulationEntity]:
+    db.query(SimulationEntity).delete()
+    state = get_state(db)
+    state.tick_count = 0
+    state.current_time = DEFAULT_TIME
+    state.step_hours = 1
+    db.flush()
+
+    entities = ensure_default_entities(db)
+    production = next(row for row in entities if row.type == "production_equipment")
+    transport = next(row for row in entities if row.type == "transport_crew")
+    storage = next(row for row in entities if row.type == "storage_unit")
+    presets = {
+        "nayong-72h": {"rate": 0.25, "speed": 35.0},
+        "urgent-48h": {"rate": 0.48, "speed": 58.0},
+        "storage-cycle-96h": {"rate": 0.38, "speed": 48.0},
+    }
+    settings = presets.get(preset, presets["nayong-72h"])
+    for component in COMPONENTS:
+        production.payload["rates_per_hour"][component] = settings["rate"]
+    transport.payload["speed_km_h"] = settings["speed"]
+    storage.payload["soc"] = 0.62 if preset == "storage-cycle-96h" else 0.5
+    flag_modified(production, "payload")
+    flag_modified(transport, "payload")
+    flag_modified(storage, "payload")
+    db.commit()
+    return db.query(SimulationEntity).order_by(SimulationEntity.id).all()
+
+
 def _position_at(route: TransportRoute, fraction: float) -> list[float]:
     points = [point for point in route.geometry if len(point) >= 2]
     if not points:
@@ -488,10 +517,11 @@ def _advance_one_tick(db: Session, state: SimulationState) -> None:
         crane.payload["direction"] = "outbound"
 
     if production.status == "producing":
-        inventory = production.payload["inventory"]
-        rates = production.payload["rates_per_hour"]
-        for component in COMPONENTS:
-            inventory[component] = round(inventory[component] + rates[component] * hours, 6)
+        if not production.payload.get("paused"):
+            inventory = production.payload["inventory"]
+            rates = production.payload["rates_per_hour"]
+            for component in COMPONENTS:
+                inventory[component] = round(inventory[component] + rates[component] * hours, 6)
 
     if (
         transport.status == "idle"

@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { CSS2DObject, CSS2DRenderer } from 'three/examples/jsm/renderers/CSS2DRenderer.js'
 import { METERS_PER_SCENE_UNIT } from './demSource'
 import { activeTerrainProjection, projectToScene, terrainElevationRange, terrainHeight, type ScenePoint } from './terrain'
-import type { MapFeatureCollection } from '../types'
+import type { MapFeatureCollection, SimulationEntity } from '../types'
 
 export type SceneTurbine = {
   id: string
@@ -18,6 +18,12 @@ export type SceneTurbine = {
   lng: number
   x: number
   z: number
+}
+
+export type SceneSimulationEntity = SimulationEntity & {
+  x: number
+  z: number
+  routePoints: Array<{ x: number; z: number }>
 }
 
 export type TerrainState = {
@@ -36,6 +42,12 @@ type Props = {
   terrain: TerrainState
   focusRequest?: { id: string; nonce: number } | null
   mapFeatures: MapFeatureCollection | null
+  simulationEntities?: SceneSimulationEntity[]
+  cameraMode?: 'follow' | 'free'
+  simulationEnabled?: boolean
+  onSimulationEnabledChange?: (enabled: boolean) => void
+  onEntitySelect?: (id: string) => void
+  onCameraModeChange?: (mode: 'follow' | 'free') => void
   onNightChange: (night: boolean) => void
   onViewModeChange: (mode: Props['viewMode']) => void
   onBasemapModeChange: (mode: Props['basemapMode']) => void
@@ -91,6 +103,12 @@ export default function SandboxScene({
   terrain,
   focusRequest,
   mapFeatures,
+  simulationEntities = [],
+  cameraMode = 'free',
+  simulationEnabled = false,
+  onSimulationEnabledChange,
+  onEntitySelect,
+  onCameraModeChange,
   onNightChange,
   onViewModeChange,
   onBasemapModeChange,
@@ -118,8 +136,18 @@ export default function SandboxScene({
   const terrainGeometryRef = useRef<THREE.BufferGeometry | null>(null)
   const basemapMeshRef = useRef<THREE.Mesh | null>(null)
   const gisGroupRef = useRef<THREE.Group | null>(null)
+  const simulationGroupRef = useRef<THREE.Group | null>(null)
+  const simulationObjectsRef = useRef(new Map<string, THREE.Object3D>())
+  const simulationSiteAssembliesRef = useRef(new Map<string, { tower: THREE.Mesh; nacelle: THREE.Group; rotor: THREE.Group; pad: THREE.Mesh }>())
+  const simulationEntitiesRef = useRef(simulationEntities)
+  const rebuildSimulationRef = useRef<(() => void) | null>(null)
+  const cameraModeRef = useRef(cameraMode)
+  const selectedEntityRef = useRef(selectedId)
 
   dataRef.current = turbines
+  simulationEntitiesRef.current = simulationEntities
+  cameraModeRef.current = cameraMode
+  selectedEntityRef.current = selectedId
   selectedRef.current = selectedId
   nightRef.current = night
   viewModeRef.current = viewMode
@@ -336,6 +364,149 @@ export default function SandboxScene({
     buildTurbines()
     rebuildRef.current = buildTurbines
 
+    const lowPolyMaterial = (color: string, options: Partial<THREE.MeshStandardMaterialParameters> = {}) => new THREE.MeshStandardMaterial({
+      color, roughness: 0.58, metalness: 0.12, ...options,
+    })
+    const makeTruck = () => {
+      const group = new THREE.Group()
+      const body = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.16, 0.24), lowPolyMaterial('#3fa9f5'))
+      body.position.y = 0.17
+      const cab = new THREE.Mesh(new THREE.BoxGeometry(0.17, 0.16, 0.22), lowPolyMaterial('#e8fbff'))
+      cab.position.set(0.21, 0.31, 0)
+      group.add(body, cab)
+      const wheelGeometry = new THREE.CylinderGeometry(0.055, 0.055, 0.05, 8)
+      wheelGeometry.rotateX(Math.PI / 2)
+      const wheelMaterial = lowPolyMaterial('#111827')
+      for (const offset of [[-0.16, -0.11], [-0.16, 0.11], [0.17, -0.11], [0.17, 0.11]]) {
+        const wheel = new THREE.Mesh(wheelGeometry, wheelMaterial)
+        wheel.position.set(offset[0], 0.055, offset[1])
+        group.add(wheel)
+      }
+      return group
+    }
+    const makeCrane = () => {
+      const group = new THREE.Group()
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.1, 6), lowPolyMaterial('#475569'))
+      base.position.y = 0.05
+      const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.04, 0.95, 6), lowPolyMaterial('#fbbf24'))
+      mast.position.y = 0.55
+      const boom = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.04, 1.15), lowPolyMaterial('#f8fafc'))
+      boom.position.set(0, 1.02, -0.34)
+      const assembly = new THREE.Group()
+      assembly.userData.isCraneAssembly = true
+      const componentMaterial = lowPolyMaterial('#e2e8f0')
+      const tower = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.04, 0.55, 8), componentMaterial)
+      tower.position.y = 0.275
+      const nacelle = new THREE.Group()
+      nacelle.add(new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.08, 0.08), componentMaterial))
+      nacelle.position.y = 0.58
+      const rotor = new THREE.Group()
+      const bladeGeometry = new THREE.BoxGeometry(0.015, 0.24, 0.012)
+      bladeGeometry.translate(0, 0.12, 0)
+      for (let index = 0; index < 3; index += 1) rotor.add(new THREE.Mesh(bladeGeometry, componentMaterial))
+      rotor.children.forEach((blade, index) => { blade.rotation.x = index * Math.PI * 2 / 3 })
+      rotor.position.z = -0.1
+      nacelle.add(rotor)
+      assembly.add(tower, nacelle)
+      assembly.position.set(0, 1.05, -0.72)
+      group.add(base, mast, boom, assembly)
+      return { group, tower, nacelle, rotor, assembly }
+    }
+    const makeStorage = () => {
+      const group = new THREE.Group()
+      const shell = new THREE.Mesh(new THREE.BoxGeometry(0.58, 0.28, 0.25), lowPolyMaterial('#164e63', { transparent: true, opacity: 0.62 }))
+      shell.position.y = 0.14
+      const fillGeometry = new THREE.BoxGeometry(0.5, 0.22, 0.18)
+      fillGeometry.translate(0, 0.11, 0)
+      const fill = new THREE.Mesh(fillGeometry, lowPolyMaterial('#22d3ee', { emissive: new THREE.Color('#22d3ee'), emissiveIntensity: 0.24 }))
+      fill.scale.y = 0.5
+      fill.position.y = 0.03
+      group.add(shell, fill)
+      return { group, fill }
+    }
+    const makeSiteAssembly = () => {
+      const group = new THREE.Group()
+      const pad = new THREE.Mesh(new THREE.CircleGeometry(0.8, 16), lowPolyMaterial('#77836f', { transparent: true, opacity: 0.5 }))
+      pad.rotation.x = -Math.PI / 2
+      pad.position.y = 0.025
+      const componentMaterial = lowPolyMaterial('#eef4f6')
+      const towerGeometry = new THREE.CylinderGeometry(0.035, 0.06, TOWER_HEIGHT_UNITS * 0.24, 8)
+      towerGeometry.translate(0, TOWER_HEIGHT_UNITS * 0.12, 0)
+      const tower = new THREE.Mesh(towerGeometry, componentMaterial)
+      const nacelle = new THREE.Group()
+      nacelle.add(new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.1, 0.1), componentMaterial))
+      const rotor = new THREE.Group()
+      const bladeGeometry = new THREE.BoxGeometry(0.022, ROTOR_RADIUS_UNITS * 0.24, 0.015)
+      bladeGeometry.translate(0, ROTOR_RADIUS_UNITS * 0.12, 0)
+      for (let index = 0; index < 3; index += 1) rotor.add(new THREE.Mesh(bladeGeometry, componentMaterial))
+      rotor.children.forEach((blade, index) => { blade.rotation.x = index * Math.PI * 2 / 3 })
+      rotor.position.z = -0.12
+      nacelle.add(rotor)
+      group.add(pad, tower, nacelle)
+      return { group, tower, nacelle, rotor, pad }
+    }
+    const buildSimulation = () => {
+      if (simulationGroupRef.current) {
+        scene.remove(simulationGroupRef.current)
+        simulationGroupRef.current.traverse(child => {
+          const mesh = child as THREE.Mesh
+          if (mesh.isMesh) {
+            mesh.geometry.dispose()
+            ;(mesh.material as THREE.Material)?.dispose()
+          }
+        })
+      }
+      const root = new THREE.Group()
+      simulationGroupRef.current = root
+      simulationObjectsRef.current.clear()
+      simulationSiteAssembliesRef.current.clear()
+
+      simulationEntitiesRef.current.forEach(entity => {
+        if (entity.type === 'transport_crew') {
+          const truck = makeTruck()
+          root.add(truck); simulationObjectsRef.current.set(entity.id, truck)
+        } else if (entity.type === 'crane') {
+          const crane = makeCrane()
+          root.add(crane.group); simulationObjectsRef.current.set(entity.id, crane.group)
+        } else if (entity.type === 'storage_unit') {
+          const storage = makeStorage()
+          root.add(storage.group); simulationObjectsRef.current.set(entity.id, storage.group)
+          storage.group.userData.storageFill = storage.fill
+        } else if (entity.type === 'production_equipment') {
+          const building = new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.4, 0.7), lowPolyMaterial('#94a3b8'))
+          building.position.set(entity.x, terrainHeight(entity.x, entity.z) + 0.2, entity.z)
+          root.add(building); simulationObjectsRef.current.set(entity.id, building)
+        } else if (entity.type === 'wind_turbine_site') {
+          const assembly = makeSiteAssembly()
+          assembly.group.position.set(entity.x, terrainHeight(entity.x, entity.z), entity.z)
+          root.add(assembly.group); simulationObjectsRef.current.set(entity.id, assembly.group)
+          simulationSiteAssembliesRef.current.set(entity.id, { tower: assembly.tower, nacelle: assembly.nacelle, rotor: assembly.rotor, pad: assembly.pad })
+        }
+      })
+
+      simulationEntitiesRef.current.filter(entity => entity.type === 'transmission_line').forEach(entity => {
+        if (entity.routePoints.length < 2) return
+        const points = entity.routePoints.map(point => new THREE.Vector3(point.x, terrainHeight(point.x, point.z) + 0.08, point.z))
+        const curve = new THREE.CatmullRomCurve3(points)
+        const curvePoints = curve.getPoints(38)
+        root.add(new THREE.Line(
+          new THREE.BufferGeometry().setFromPoints(curvePoints),
+          new THREE.LineBasicMaterial({ color: '#7df3c4', transparent: true, opacity: 0.34 }),
+        ))
+        const dots = new THREE.InstancedMesh(
+          new THREE.SphereGeometry(0.035, 6, 5),
+          new THREE.MeshBasicMaterial({ color: '#a7f3d0' }),
+          20,
+        )
+        dots.frustumCulled = false
+        dots.userData = { flowCurve: curvePoints, flowOffset: 0 }
+        root.add(dots); simulationObjectsRef.current.set(entity.id, dots)
+      })
+      scene.add(root)
+    }
+    buildSimulation()
+    rebuildSimulationRef.current = buildSimulation
+
     const fitCamera = () => {
       const points: ScenePoint[] = dataRef.current.length
         ? dataRef.current
@@ -464,6 +635,26 @@ export default function SandboxScene({
         if (nightRef.current && index % 4 === 0) light.visible = blink > 0.18
         else light.visible = true
       })
+      simulationGroupRef.current?.traverse(child => {
+        const dots = child as THREE.InstancedMesh
+        if (!dots.isInstancedMesh) return
+        const curve = dots.userData.flowCurve as THREE.Vector3[]
+        const count = Number(dots.userData.visibleCount ?? 0)
+        dots.userData.flowOffset = (Number(dots.userData.flowOffset ?? 0) + Number(dots.userData.flowSpeed ?? 0.04) * delta) % 1
+        const matrix = new THREE.Matrix4()
+        const scaleVector = new THREE.Vector3()
+        for (let index = 0; index < dots.count; index += 1) {
+          const phase = (Number(dots.userData.flowOffset) + index / Math.max(1, dots.count)) % 1
+          const pointIndex = phase * (curve.length - 1)
+          const from = curve[Math.floor(pointIndex)]
+          const to = curve[Math.min(curve.length - 1, Math.floor(pointIndex) + 1)]
+          const alpha = pointIndex - Math.floor(pointIndex)
+          scaleVector.setScalar(index < count ? 1 : 0)
+          matrix.compose(from.clone().lerp(to, alpha), new THREE.Quaternion(), scaleVector)
+          dots.setMatrixAt(index, matrix)
+        }
+        dots.instanceMatrix.needsUpdate = true
+      })
 
       if (viewModeRef.current === 'orbit') {
         const orbitDistance = camera.position.distanceTo(controls.target)
@@ -473,6 +664,20 @@ export default function SandboxScene({
           controls.target.y + orbitDistance * 0.35,
           controls.target.z + Math.cos(orbitAngle) * orbitDistance,
         )
+      }
+      if (cameraModeRef.current === 'follow' && selectedEntityRef.current) {
+        const targetObject = simulationObjectsRef.current.get(selectedEntityRef.current)
+          ?? turbineMapRef.current.get(selectedEntityRef.current)
+        if (targetObject) {
+          const worldTarget = new THREE.Vector3()
+          targetObject.getWorldPosition(worldTarget)
+          const isSimulation = simulationObjectsRef.current.has(selectedEntityRef.current)
+          worldTarget.y += isSimulation ? 0.35 : TOWER_HEIGHT_UNITS * 0.8
+          if (isSimulation) {
+            controls.target.copy(worldTarget)
+            camera.position.copy(worldTarget).add(new THREE.Vector3(3.2, 1.6, 4.4))
+          } else controls.target.lerp(worldTarget, 0.08)
+        }
       }
       renderer.render(scene, camera)
       labelRenderer.render(scene, camera)
@@ -505,6 +710,7 @@ export default function SandboxScene({
       cameraRef.current = null
       controlsRef.current = null
       focusNacelleRef.current = null
+      rebuildSimulationRef.current = null
     }
     // A terrain version change deliberately rebuilds the WebGL scene around the new DEM extent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -683,9 +889,107 @@ export default function SandboxScene({
     rebuildRef.current?.()
   }, [turbineSignature])
 
+  const simulationSignature = simulationEntities.map(entity => [
+    entity.id, entity.status, entity.progress.toFixed(2),
+    Number(entity.payload?.soc ?? 0).toFixed(4), Number(entity.payload?.flow_mw ?? 0).toFixed(2),
+    entity.payload?.stage ?? '', Number(entity.payload?.stage_progress ?? 0).toFixed(3),
+  ].join(':')).join('|')
+  useEffect(() => {
+    if (!simulationObjectsRef.current.size) rebuildSimulationRef.current?.()
+    const entityById = new Map(simulationEntities.map(entity => [entity.id, entity]))
+    const routePosition = (entity: SceneSimulationEntity, progress: number, reverse: boolean) => {
+      const points = entity.routePoints
+      if (points.length < 2) return points[0] ?? { x: entity.x, z: entity.z }
+      const fraction = Math.max(0, Math.min(1, progress / 100))
+      const distance = (reverse ? 1 - fraction : fraction) * (points.length - 1)
+      const index = Math.min(points.length - 2, Math.floor(distance))
+      const alpha = distance - index
+      const from = points[index]
+      const to = points[index + 1]
+      return { x: from.x + (to.x - from.x) * alpha, z: from.z + (to.z - from.z) * alpha }
+    }
+
+    simulationEntities.forEach(entity => {
+      const object = simulationObjectsRef.current.get(entity.id)
+      if (!object) return
+      if (entity.type === 'transport_crew') {
+        const reverse = entity.payload?.direction === 'return' || entity.payload?.direction === 'returning'
+        const point = routePosition(entity, entity.progress, reverse)
+        object.position.set(point.x, terrainHeight(point.x, point.z), point.z)
+        const segmentIndex = Math.max(0, Math.min(entity.routePoints.length - 2, Math.floor(entity.progress / 100 * (entity.routePoints.length - 1))))
+        const from = entity.routePoints[segmentIndex]
+        const to = entity.routePoints[segmentIndex + 1] ?? from
+        if ((reverse ? from.x - to.x : to.x - from.x) || (reverse ? from.z - to.z : to.z - from.z)) {
+          const targetX = reverse ? from.x - to.x : to.x - from.x
+          const targetZ = reverse ? from.z - to.z : to.z - from.z
+          object.rotation.y = Math.atan2(-targetZ, targetX)
+        }
+      } else if (entity.type === 'crane') {
+        const site = Array.from(entityById.values()).find(candidate => candidate.type === 'wind_turbine_site')
+        const moving = entity.status === 'moving' && entity.routePoints.length > 1
+        const point = moving ? routePosition(entity, entity.progress, false) : { x: site?.x ?? entity.x, z: site?.z ?? entity.z }
+        object.position.set(point.x + (moving ? 0 : 0.45), terrainHeight(point.x + (moving ? 0 : 0.45), point.z), point.z + (moving ? 0 : 0.4))
+        const siteEntity = site
+        const stock = siteEntity?.payload?.stock ?? {}
+        const stage = siteEntity?.payload?.stage
+        const showTower = Boolean(stock.tower || stage === 'tower')
+        const showNacelle = Boolean(stock.nacelle || stage === 'nacelle')
+        const showRotor = Boolean(stock.blade || stage === 'blade')
+        const assembly = (object as THREE.Group).children.find(child => child.userData?.isCraneAssembly)
+        if (assembly) {
+          assembly.children[0].visible = showTower
+          assembly.children[1].visible = showNacelle || showRotor
+        }
+      } else if (entity.type === 'storage_unit') {
+        const fill = object.userData.storageFill as THREE.Mesh | undefined
+        const soc = Math.max(0, Math.min(1, Number(entity.payload?.soc ?? 0)))
+        if (fill) fill.scale.y = Math.max(0.04, soc)
+        const mesh = fill?.material as THREE.MeshStandardMaterial
+        mesh?.color.set(entity.payload?.mode === 'discharge' ? '#fbbf24' : entity.payload?.mode === 'charge' ? '#86efac' : '#22d3ee')
+      }
+
+      if (entity.type === 'wind_turbine_site') {
+        const assembly = simulationSiteAssembliesRef.current.get(entity.id)
+        if (assembly) {
+          const stage = entity.payload?.stage
+          const progress = Math.max(0, Math.min(1, Number(entity.payload?.stage_progress ?? 0)))
+          const complete = entity.payload?.installed_units > 0 || entity.status === 'online'
+          const towerRise = stage === 'tower' ? 0.12 + progress * 0.88 : stage ? 1 : complete ? 1 : 0.04
+          assembly.tower.scale.y = towerRise
+          assembly.tower.visible = towerRise > 0.045
+          assembly.nacelle.visible = complete || stage === 'nacelle' || stage === 'blade'
+          assembly.nacelle.position.y = TOWER_HEIGHT_UNITS * (stage === 'nacelle' ? 0.18 + progress * 0.06 : 0.24)
+          assembly.nacelle.rotation.y = stage === 'nacelle' ? (1 - progress) * 1.6 : 0
+          assembly.rotor.visible = complete || stage === 'blade'
+          assembly.rotor.rotation.z = stage === 'blade' ? -1.4 + progress * 1.4 : 0
+        }
+      }
+
+      if (entity.type === 'transmission_line' && (object as THREE.InstancedMesh).isInstancedMesh) {
+        const dots = object as THREE.InstancedMesh
+        const flow = Math.max(0, Number(entity.payload?.flow_mw ?? 0))
+        const capacity = Math.max(1, Number(entity.payload?.capacity_mw ?? 1))
+        const curve = dots.userData.flowCurve as THREE.Vector3[]
+        const visible = Math.max(2, Math.round(3 + (flow / capacity) * 17))
+        dots.userData.visibleCount = visible
+        const matrix = new THREE.Matrix4()
+        for (let index = 0; index < dots.count; index += 1) {
+          const visibleDot = index < visible && flow > 0.01
+          dots.setMatrixAt(index, matrix.makeScale(visibleDot ? 1 : 0, visibleDot ? 1 : 0, visibleDot ? 1 : 0))
+        }
+        dots.userData.flowSpeed = 0.035 + (flow / capacity) * 0.12
+        dots.instanceMatrix.needsUpdate = true
+      }
+    })
+  }, [simulationSignature, simulationEntities])
+
   useEffect(() => {
     applyViewRef.current?.()
   }, [viewMode])
+
+  useEffect(() => {
+    if (simulationObjectsRef.current.size) rebuildSimulationRef.current?.()
+  }, [terrain.version])
 
   useEffect(() => {
     const scene = sceneRef.current
@@ -740,6 +1044,7 @@ export default function SandboxScene({
           ))}
           <button className={night ? '' : 'active'} onClick={() => onNightChange(false)}>白天</button>
           <button className={night ? 'active' : ''} onClick={() => onNightChange(true)}>夜晚</button>
+          <button className={simulationEnabled ? 'active' : ''} onClick={() => onSimulationEnabledChange?.(!simulationEnabled)}>推演</button>
         </div>
         <div className="tool-group zoom-group">
           <button onClick={() => zoomRef.current?.(1)}>＋</button>

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 from .database import get_db
 from .models import SimulationEntity
 from .schemas import SimulationEntityIn, SimulationTickIn
-from .simulation import ENTITY_TYPES, advance, build_timeseries, ensure_default_entities, get_state
+from .simulation import ENTITY_TYPES, advance, build_timeseries, ensure_default_entities, get_state, reset_entities
 
 router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
@@ -22,6 +22,12 @@ def serialize_state(state):
 @router.get("/entities")
 def list_entities(db: Session = Depends(get_db)):
     return ensure_default_entities(db)
+
+
+@router.post("/reset")
+def reset(preset: str = Query("nayong-72h", pattern="^(nayong-72h|urgent-48h|storage-cycle-96h)$"), db: Session = Depends(get_db)):
+    entities = reset_entities(db, preset)
+    return {"state": serialize_state(get_state(db)), "entities": entities}
 
 
 @router.post("/entities")

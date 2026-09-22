@@ -8,7 +8,12 @@ import type { TurbineHistory } from '../api'
 const ALL_LAYERS = { regions: true, heat: true, windFarms: true, turbines: true, projects: true, factories: true, substations: true, routes: true, alerts: true, entities: true, powerFlow: true }
 const DEFAULT_PERIOD = '2027-Q3'
 const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
-const PLAYBACK_INTERVALS = { 1: 5000, 10: 500, 60: 120 } as const
+const PLAYBACK_INTERVALS = { 1: 5000, 10: 500, 60: 120, 100: 40 } as const
+const SIM_PRESETS = [
+  { key: 'nayong-72h', label: '纳雍示范场 72h 全链路推演' },
+  { key: 'urgent-48h', label: '抢装交付 48h 高节奏推演' },
+  { key: 'storage-cycle-96h', label: '储能调节 96h 循环推演' },
+] as const
 
 export default function GisView() {
   const [overview, setOverview] = useState<any>(null)
@@ -25,7 +30,9 @@ export default function GisView() {
   const [timeseries, setTimeseries] = useState<SimulationTimeseries | null>(null)
   const [selectedEntity, setSelectedEntity] = useState<SimulationEntity | null>(null)
   const [playing, setPlaying] = useState(false)
-  const [speed, setSpeed] = useState<1 | 10 | 60>(1)
+  const [speed, setSpeed] = useState<1 | 10 | 60 | 100>(1)
+  const [presetKey, setPresetKey] = useState<(typeof SIM_PRESETS)[number]['key']>('nayong-72h')
+  const [jumpHours, setJumpHours] = useState(24)
   const [simError, setSimError] = useState('')
   const [period, setPeriod] = useState(DEFAULT_PERIOD)
   const [layers, setLayers] = useState({ ...ALL_LAYERS })
@@ -184,6 +191,62 @@ export default function GisView() {
     setBusy('')
   }
 
+  const applySimulationResult = (result: import('../types').SimulationTickResult) => {
+    setEntities(result.entities)
+    setSimulationState(result.state)
+    setSelectedEntity(current => result.entities.find(entity => entity.id === current?.id) ?? null)
+    return result
+  }
+
+  const simulationHour = simulationState ? Math.max(0, simulationState.tick_count * simulationState.step_hours) : 0
+
+  const selectPreset = async (key: typeof presetKey) => {
+    setPresetKey(key); setBusy('重置推演场景')
+    try {
+      const result = applySimulationResult(await api.simulationReset(key))
+      if (key === 'storage-cycle-96h') setSelectedEntity(result.entities.find(entity => entity.type === 'storage_unit') ?? null)
+      setSimError(''); setPlaying(true)
+    } catch { setSimError('场景重置失败') }
+    setBusy('')
+  }
+
+  const replayFromZero = async () => {
+    setBusy('回到 0 点')
+    try {
+      applySimulationResult(await api.simulationReset(presetKey))
+      setSimError(''); setPlaying(true)
+    } catch { setSimError('回放重置失败') }
+    setBusy('')
+  }
+
+  const jumpToHour = async () => {
+    const target = Math.max(0, Math.floor(jumpHours))
+    setBusy(`跳转 T+${target}h`)
+    try {
+      if (target < simulationHour) applySimulationResult(await api.simulationReset(presetKey))
+      if (target > simulationHour) {
+        const result = applySimulationResult(await api.simulationTick(1, target - simulationHour))
+        setTimeseries(await api.simulationTimeseries(72))
+        void result
+      }
+      if (target === simulationHour) applySimulationResult(await api.simulationReset(presetKey))
+      setSimError('')
+    } catch { setSimError('时刻跳转失败') }
+    setBusy('')
+  }
+
+  const updateEntityPayload = async (patch: Record<string, any>) => {
+    if (!selectedEntity) return
+    const next: SimulationEntity = { ...selectedEntity, payload: { ...selectedEntity.payload, ...patch } }
+    setSelectedEntity(next)
+    try {
+      const updated = await api.simulationUpsert(next)
+      setEntities(current => current.map(entity => entity.id === updated.id ? updated : entity))
+      setSelectedEntity(updated)
+      setSimError('')
+    } catch { setSimError('干预写入失败') }
+  }
+
   useEffect(() => {
     if (!playing) return
     let active = true
@@ -267,10 +330,18 @@ export default function GisView() {
       <div className="sim-control">
         <button className={playing ? 'active' : ''} onClick={() => setPlaying(value => !value)}>{playing ? '暂停' : '播放'}</button>
         <div className="speed-group" role="group" aria-label="推演速度">
-          {([1, 10, 60] as const).map(value => (
+          {([1, 10, 60, 100] as const).map(value => (
             <button key={value} className={speed === value ? 'active' : ''} onClick={() => setSpeed(value)}>{value}x</button>
           ))}
         </div>
+        <select aria-label="场景预设" value={presetKey} onChange={event => selectPreset(event.target.value as typeof presetKey)}>
+          {SIM_PRESETS.map(preset => <option key={preset.key} value={preset.key}>{preset.label}</option>)}
+        </select>
+        <button onClick={replayFromZero}>回到 0 点重放</button>
+        <span className="jump-group">
+          <input aria-label="目标小时" type="number" min={0} max={8760} value={jumpHours} onChange={event => setJumpHours(Number(event.target.value))} />
+          <button onClick={jumpToHour}>跳转</button>
+        </span>
         <small>{simulationState ? `T+${simulationState.tick_count}h` : '准备'}</small>
         {simError && <b>{simError}</b>}
       </div>
@@ -352,9 +423,29 @@ export default function GisView() {
               </div>
               <div className="progress-track"><i style={{ width: `${Math.max(0, Math.min(100, selectedEntity.progress))}%` }} /></div>
               {selectedEntity.type === 'storage_unit' && (
-                <div className="soc-block">
-                  <label>SOC <b>{(Number(selectedEntity.payload?.soc ?? 0) * 100).toFixed(1)}%</b></label>
-                  <div className="soc-track"><i style={{ width: `${Math.max(0, Math.min(100, Number(selectedEntity.payload?.soc ?? 0) * 100))}%` }} /></div>
+                <div className="soc-meter">
+                  <div className="soc-column" aria-label="SOC 液柱">
+                    <i style={{ height: `${Math.max(2, Math.min(100, Number(selectedEntity.payload?.soc ?? 0) * 100))}%` }} />
+                  </div>
+                  <div className="soc-detail">
+                    <label>SOC <b>{(Number(selectedEntity.payload?.soc ?? 0) * 100).toFixed(1)}%</b></label>
+                    <b className={selectedEntity.payload?.mode}>
+                      {{ charge: '↑ 充电', discharge: '↓ 放电', idle: '· 闲置' }[selectedEntity.payload?.mode as string] ?? '· 闲置'}
+                    </b>
+                    <span>{Number(selectedEntity.payload?.delta_mw ?? 0).toFixed(2)} MW</span>
+                  </div>
+                </div>
+              )}
+              {selectedEntity.type === 'production_equipment' && (
+                <div className="intervention-row">
+                  <button onClick={() => updateEntityPayload({ paused: false, status: 'producing' })}>恢复生产</button>
+                  <button onClick={() => updateEntityPayload({ paused: true, status: 'paused' })}>暂停生产</button>
+                </div>
+              )}
+              {selectedEntity.type === 'transport_crew' && (
+                <div className="intervention-row">
+                  <button onClick={() => updateEntityPayload({ speed_km_h: Math.min(120, Number(selectedEntity.payload.speed_km_h ?? 35) * 1.35) })}>加速 35%</button>
+                  <button onClick={() => updateEntityPayload({ speed_km_h: Math.max(15, Number(selectedEntity.payload.speed_km_h ?? 35) / 1.35) })}>减速 26%</button>
                 </div>
               )}
               <pre>{JSON.stringify(selectedEntity.payload, null, 2)}</pre>

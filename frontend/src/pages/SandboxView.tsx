@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import SandboxScene, { type SceneTurbine, type TerrainState } from '../sandbox/SandboxScene'
+import SandboxScene, { type SceneSimulationEntity, type SceneTurbine, type TerrainState } from '../sandbox/SandboxScene'
 import Chart from '../components/Chart'
 import { api } from '../api'
 import { loadDemCached } from '../sandbox/dem'
 import { createSceneProjection, projectToScene, setTerrainScene } from '../sandbox/terrain'
-import type { Alert, MapFeatureCollection, Turbine, WindFarm } from '../types'
+import type { Alert, MapFeatureCollection, Route, SimulationEntity, SimulationState, Turbine, WindFarm } from '../types'
 
 type ViewMode = 'overview' | 'top' | 'side' | 'orbit'
+type CameraMode = 'follow' | 'free'
 type BaseTurbine = Turbine & { x: number; z: number }
 type FarmOption = Pick<WindFarm, 'id' | 'name' | 'turbineCount'> & { lat: number; lng: number }
 const DEFAULT_PERIOD = '2027-Q3'
@@ -20,6 +21,21 @@ function phase(id: string) {
 function projectTurbines(turbines: Turbine[]): BaseTurbine[] {
   const projection = createSceneProjection(turbines)
   return turbines.map(turbine => ({ ...turbine, ...projectToScene(turbine.lat, turbine.lng, projection) }))
+}
+
+function projectSimulationEntities(
+  entities: SimulationEntity[],
+  routes: Route[],
+  projection: ReturnType<typeof createSceneProjection> | null,
+): SceneSimulationEntity[] {
+  if (!projection) return []
+  return entities.map(entity => {
+    const route = routes.find(item => item.id === entity.payload?.route_id)
+    const routeGeometry = route?.geometry ?? [entity.position]
+    const routePoints = routeGeometry.map(point => projectToScene(point[0], point[1], projection))
+    const position = projectToScene(entity.position[0], entity.position[1], projection)
+    return { ...entity, routePoints, x: position.x, z: position.z }
+  })
 }
 
 function liveTurbine(turbine: BaseTurbine, index: number, seconds: number): SceneTurbine {
@@ -60,6 +76,13 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   const [viewMode, setViewMode] = useState<ViewMode>('overview')
   const [basemapMode, setBasemapMode] = useState<'current' | 'street' | 'satellite'>('current')
   const [mapFeatures, setMapFeatures] = useState<MapFeatureCollection | null>(null)
+  const [simulationEnabled, setSimulationEnabled] = useState(false)
+  const [simulationPlaying, setSimulationPlaying] = useState(true)
+  const [simulationEntities, setSimulationEntities] = useState<SimulationEntity[]>([])
+  const [simulationState, setSimulationState] = useState<SimulationState | null>(null)
+  const [routes, setRoutes] = useState<Route[]>([])
+  const [sceneProjection, setSceneProjection] = useState<ReturnType<typeof createSceneProjection> | null>(null)
+  const [cameraMode, setCameraMode] = useState<CameraMode>('follow')
   const [focusRequest, setFocusRequest] = useState<{ id: string; nonce: number } | null>(null)
   const [tick, setTick] = useState(() => Date.now())
   const [terrainVersion, setTerrainVersion] = useState(0)
@@ -90,6 +113,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
       const result = await loadDemCached(farmTurbines, `${farmId}:${periodValue}`, controller.signal)
       if (controller.signal.aborted) return
       const gridProjection = result.grid.projection
+      setSceneProjection(gridProjection)
       const projectedForGrid = projected.map(turbine => ({
         ...turbine,
         ...projectToScene(turbine.lat, turbine.lng, gridProjection),
@@ -106,6 +130,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     } catch (error) {
       if (controller.signal.aborted || (error instanceof DOMException && error.name === 'AbortError')) return
       const projection = createSceneProjection(farmTurbines)
+      setSceneProjection(projection)
       setTerrainScene(null, projection, projected)
       terrainVersionRef.current += 1
       setTerrainState({
@@ -161,6 +186,37 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   }, [])
 
   useEffect(() => {
+    if (!simulationEnabled) return
+    let mounted = true
+    Promise.all([api.simulationEntities(), api.routes()])
+      .then(([entities, routeRows]) => {
+        if (!mounted) return
+        const simulationFarmId = entities.find(entity => entity.type === 'wind_turbine_site')?.payload?.wind_farm_id
+        if (typeof simulationFarmId === 'string' && simulationFarmId !== selectedFarmId) setSelectedFarmId(simulationFarmId)
+        setSimulationEntities(entities); setRoutes(routeRows); setSimulationPlaying(true)
+      })
+      .catch(() => setSimulationPlaying(false))
+    return () => { mounted = false }
+  }, [simulationEnabled])
+
+  useEffect(() => {
+    if (!simulationEnabled || !simulationPlaying) return
+    let active = true
+    const advance = async () => {
+      try {
+        const result = await api.simulationTick(1, 1)
+        if (active) {
+          setSimulationEntities(result.entities)
+          setSimulationState(result.state)
+        }
+      } catch { if (active) setSimulationPlaying(false) }
+    }
+    advance()
+    const timer = window.setInterval(advance, 900)
+    return () => { active = false; window.clearInterval(timer) }
+  }, [simulationEnabled, simulationPlaying])
+
+  useEffect(() => {
     if (!selectedFarmId || !periods.length) return
     const requestNonce = ++periodRequestRef.current
     setPeriodLoading(true)
@@ -199,6 +255,11 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     [baseTurbines, selectedFarmId],
   )
   const selected = turbines.find(item => item.id === selectedId) ?? null
+  const sceneSimulationEntities = useMemo(
+    () => projectSimulationEntities(simulationEntities, routes, sceneProjection),
+    [simulationEntities, routes, sceneProjection],
+  )
+  const selectedSimulation = sceneSimulationEntities.find(entity => entity.id === selectedId) ?? null
   const totalPower = turbines.reduce((sum, item) => sum + item.liveMw, 0)
   const chartTotalPower = chartTurbines.reduce((sum, item) => sum + item.liveMw, 0)
   const cumulativeMwh = 282 + totalPower * 0.94
@@ -382,10 +443,33 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
           focusRequest={focusRequest}
           basemapMode={basemapMode}
           mapFeatures={mapFeatures}
+          simulationEntities={simulationEnabled ? sceneSimulationEntities : []}
+          cameraMode={cameraMode}
+          simulationEnabled={simulationEnabled}
+          onSimulationEnabledChange={setSimulationEnabled}
+          onEntitySelect={setSelectedId}
           onNightChange={setNight}
           onViewModeChange={setViewMode}
           onBasemapModeChange={setBasemapMode}
         />
+        {simulationEnabled && (
+          <div className="simulation-hud">
+            <b>3D 推演 {simulationState ? `T+${simulationState.tick_count}h` : ''}</b>
+            <div className="camera-mode-group">
+              {(['follow', 'free'] as const).map(mode => (
+                <button key={mode} className={cameraMode === mode ? 'active' : ''} onClick={() => setCameraMode(mode)}>
+                  {mode === 'follow' ? '跟随' : '自由'}
+                </button>
+              ))}
+            </div>
+            {sceneSimulationEntities.slice(0, 8).map(entity => (
+              <div key={entity.id} className="entity-pill" data-active={entity.id === selectedId} onClick={() => setSelectedId(entity.id)}>
+                <span>{entity.name}</span><small>{entity.progress.toFixed(0)}%</small>
+              </div>
+            ))}
+            {selectedSimulation && <small>SOC {(Number(selectedSimulation.payload?.soc ?? 0) * 100).toFixed(0)}% · flow {Number(selectedSimulation.payload?.flow_mw ?? 0).toFixed(0)}MW</small>}
+          </div>
+        )}
 
         <aside className={`sandbox-column right${collapsed.right ? ' collapsed' : ''}`}>
           <button className="panel-toggle" onClick={() => togglePanel('right')} aria-label="折叠右侧面板">›</button>
