@@ -23,6 +23,7 @@ export class UnifiedTurbineLayer implements maplibregl.CustomLayerInterface {
   private turbines: UnifiedWindTurbine[] = []
   /** 模型放大倍率（用户滑条控制，1 = 真实米尺度，底座位置不变） */
   userScale = 1
+  private lastZoom = 0
 
   setUserScale(value: number) {
     this.userScale = Math.max(0.5, Math.min(30, value))
@@ -62,7 +63,7 @@ export class UnifiedTurbineLayer implements maplibregl.CustomLayerInterface {
     const position = new THREE.Vector3()
     const quaternion = new THREE.Quaternion()
     const zoom = this.map?.getZoom() ?? 10
-    // 远距离时模型真实尺寸几乎不可见，做 zoom 补偿；再叠加用户滑条倍率
+    // 远距离时真实米尺度几乎不可见，做 zoom 补偿；再叠加用户滑条倍率
     const zoomBoost = Math.max(1, 6 * Math.pow(2, 9.5 - zoom))
     const total = this.userScale * zoomBoost
     const scale = new THREE.Vector3(total, total, total)
@@ -70,10 +71,13 @@ export class UnifiedTurbineLayer implements maplibregl.CustomLayerInterface {
     this.meshes.forEach((mesh, meshIndex) => {
       this.turbines.forEach((turbine, index) => {
         const mercator = maplibregl.MercatorCoordinate.fromLngLat({ lng: turbine.lng, lat: turbine.lat }, 900)
+        // render() 的矩阵链 T(anchor)·S(mu,-mu,mu)·Rx(90°) 中局部轴语义：
+        //   局部 x = 东向米, 局部 y = 海拔米(向上), 局部 z = 南向米。
+        // 旧代码把 z 当高度写死 1620、把纬度差放进 y，导致整机飞出裁剪空间（酒泉不渲染的根因）。
         position.set(
           (mercator.x - this.anchor.x) / this.meterUnits,
-          -(mercator.y - this.anchor.y) / this.meterUnits,
-          1620,
+          0,
+          (mercator.y - this.anchor.y) / this.meterUnits,
         )
         if (meshIndex === 2) quaternion.setFromAxisAngle(new THREE.Vector3(0, 0, 1), (index % 3) * Math.PI * 2 / 3)
         else quaternion.identity()
@@ -88,8 +92,6 @@ export class UnifiedTurbineLayer implements maplibregl.CustomLayerInterface {
       mesh.computeBoundingSphere()
     })
   }
-
-  private lastZoom = 0
 
   render(_gl: WebGLRenderingContext, options: maplibregl.CustomRenderMethodInput) {
     if (!this.renderer || !this.map || !this.meshes.length) return

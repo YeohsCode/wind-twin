@@ -144,6 +144,8 @@ table { width:100%; border-collapse: collapse; font-size:11px; } th,td { padding
   border: 1px solid rgba(56,189,248,.22); border-radius: 12px;
   background: rgba(3,12,22,.88); backdrop-filter: blur(18px); box-shadow: var(--shadow);
 }
+.scale-slider { display: flex; align-items: center; gap: 8px; color: #d8f6ff; font-size: 12px; white-space: nowrap; }
+.scale-slider input[type='range'] { width: 400px; accent-color: #38bdf8; }
 .sim-control button { height: 30px; min-width: 42px; padding: 0 9px; border: 1px solid rgba(56,189,248,.16); border-radius: 8px; background: rgba(6,18,31,.78); color: var(--muted); cursor: pointer; }
 .sim-control button.active { color: #04121e; background: linear-gradient(120deg,#67e8f9,#38bdf8); font-weight: 700; border-color: transparent; }
 .sim-control .speed-group { display: flex; gap: 5px; }

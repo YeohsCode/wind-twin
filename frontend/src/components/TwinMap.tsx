@@ -660,7 +660,7 @@ export default function TwinMap(props: Props) {
     source('powerArrows', { type: 'FeatureCollection', features: flowFeatures })
     turbineLayerRef.current?.setData(props.turbines)
     unifiedTurbineLayerRef.current?.setData(props.unifiedTurbines ?? [])
-  }, [readyTick, props.regions, props.farms, props.turbines, props.factories, props.projects, props.substations, props.routes, props.alerts, props.activePlan, props.focusRegion, props.unifiedFarms, props.unifiedTurbines])
+  }, [readyTick, props.regions, props.farms, props.turbines, props.factories, props.projects, props.substations, props.routes, props.alerts, props.activePlan, props.focusRegion, props.unifiedFarms, props.unifiedTurbines, props.turbineScale])
 
   useEffect(() => {
     const map = mapRef.current
