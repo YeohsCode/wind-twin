@@ -3,7 +3,7 @@ import maplibregl, { Map as MLMap, StyleSpecification } from 'maplibre-gl'
 import { Protocol } from 'pmtiles'
 import * as THREE from 'three'
 import { TurbineLayer } from './TurbineLayer'
-import type { Alert, Factory, Project, Region, Route, Substation, SimulationEntity, Turbine, WindFarm, Plan } from '../types'
+import type { Alert, Factory, Project, RealWindFarm, RealWindTurbine, Region, Route, Substation, SimulationEntity, Turbine, WindFarm, Plan } from '../types'
 
 type Layers = Record<string, boolean>
 type Props = {
@@ -11,6 +11,7 @@ type Props = {
   substations: Substation[]; routes: Route[]; alerts: Alert[]; activePlan: Plan | null
   layers: Layers; period: string; focusRegion: string | null; focusFarm: string | null
   entities?: SimulationEntity[]; selectedEntityId?: string | null
+  realFarms?: RealWindFarm[]; realTurbines?: RealWindTurbine[]
   onSelectTurbine: (t: Turbine) => void; onSelectProject: (p: Project) => void
   onSelectRegion: (id: string) => void; onSelectFarm: (id: string) => void
   onSelectEntity?: (entity: SimulationEntity) => void
@@ -20,6 +21,13 @@ const emptyFC = { type: 'FeatureCollection' as const, features: [] }
 const ll = (points: number[][]) => points.map(([lat, lng]) => [lng, lat])
 const ring = (points: number[][]) => ll(points)
 const FACTORY_COLORS: Record<string, string> = { 'F-A': '#38bdf8', 'F-B': '#a78bfa', 'F-C': '#22c55e' }
+const REAL_FARM_COLORS: Record<string, string> = {
+  'hale-wind': '#f97316',
+  'sagamore-wind': '#a78bfa',
+  'traverse-wind': '#facc15',
+  'high-banks': '#22c55e',
+  'western-spirit': '#fb7185',
+}
 const STATUS_COLORS: Record<string, string> = { construction: '#f97316', approved: '#38bdf8', reserve: '#94a3b8' }
 const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
 const SIM_TYPE_LABELS: Record<string, string> = {
@@ -150,6 +158,7 @@ export default function TwinMap(props: Props) {
   const mapRef = useRef<MLMap | null>(null)
   const turbineLayerRef = useRef<TurbineLayer | null>(null)
   const readyRef = useRef(false)
+  const realWindFitRef = useRef(false)
   const [readyTick, setReadyTick] = useState(0)
   const clickHandlers = useRef(props)
   clickHandlers.current = props
@@ -186,7 +195,7 @@ export default function TwinMap(props: Props) {
         'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 6, 0.35, 10, 0.12],
       })
       map.setTerrain({ source: 'terrain', exaggeration: 1.25 })
-      const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits', 'simulationEntities', 'powerFlow', 'powerArrows']
+      const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits', 'simulationEntities', 'powerFlow', 'powerArrows', 'realTurbines']
       geoSources.forEach(id => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: emptyFC }) })
       const initial = [
       { id: 'region-fill', type: 'fill', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'fill-color': '#7dd3fc', 'fill-opacity': 0 } },
@@ -241,6 +250,16 @@ export default function TwinMap(props: Props) {
         'icon-rotate': ['case', ['==', ['get', 'type'], 'transport_crew'], ['get', 'heading'], 0], 'icon-rotation-alignment': 'map', 'icon-pitch-alignment': 'viewport',
       } })
       map.addLayer({ id: 'simulation-hit', type: 'circle', source: 'simulationEntities', paint: { 'circle-radius': 15, 'circle-color': '#fff', 'circle-opacity': .01 } })
+      map.addLayer({
+        id: 'real-wind-points', type: 'circle', source: 'realTurbines',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 1.6, 7, 2.8, 11, 4.2],
+          'circle-color': ['get', 'color'],
+          'circle-opacity': 0.82,
+          'circle-stroke-color': 'rgba(248,250,252,.82)',
+          'circle-stroke-width': 0.7,
+        },
+      })
       const layer = new TurbineLayer([114.4, 40.8])
       turbineLayerRef.current = layer
       if (!map.getLayer(layer.id)) map.addLayer(layer as any)
@@ -255,6 +274,22 @@ export default function TwinMap(props: Props) {
         if (entity) { clickHandlers.current.onSelectEntity?.(entity); return }
       }
       const farmHitsFirst = map.queryRenderedFeatures(event.point, { layers: ['farm-hit'] })
+      const realHits = map.queryRenderedFeatures(event.point, { layers: ['real-wind-points'] })
+      if (realHits.length) {
+        const item = realHits[0].properties as any
+        const farm = clickHandlers.current.realFarms?.find(candidate => candidate.id === item.farmId)
+        if (item.farmId && farm) {
+          new maplibregl.Popup({ offset: 12, closeButton: false })
+            .setLngLat(event.lngLat).setHTML(`
+              <strong>${farm.name}</strong><br>
+              ${farm.state} · USGS USWTDB 实测<br>
+              ${farm.turbineCount} 台 · ${farm.capacityMw.toFixed(1)} MW<br>
+              主力机型 ${farm.dominantModel}<br>
+              投产 ${farm.commissioningYear}
+            `).addTo(map)
+          return
+        }
+      }
       const hits = map.queryRenderedFeatures(event.point, { layers: ['turbine-hit'] })
       if (hits.length && !farmHitsFirst.length) {
         const turbine = clickHandlers.current.turbines.find(t => t.id === hits[0].properties?.id)
@@ -312,6 +347,23 @@ export default function TwinMap(props: Props) {
       geometry: { type: 'Polygon', coordinates: [ring(f.boundary)] },
     })) })
     source('farmPoints', { type: 'FeatureCollection', features: props.farms.map(f => ({ type: 'Feature', properties: { id: f.id }, geometry: { type: 'Point', coordinates: [f.lng, f.lat] } })) })
+    source('realTurbines', {
+      type: 'FeatureCollection',
+      features: (props.realTurbines ?? []).map(turbine => ({
+        type: 'Feature',
+        properties: {
+          farmId: turbine.farmId,
+          color: REAL_FARM_COLORS[turbine.farmId] ?? '#facc15',
+        },
+        geometry: { type: 'Point', coordinates: [turbine.lon, turbine.lat] },
+      })),
+    })
+    if (props.layers.realWind && (props.realFarms?.length ?? 0) > 0 && (props.realTurbines?.length ?? 0) > 0 && !realWindFitRef.current) {
+      realWindFitRef.current = true
+      const bounds = new maplibregl.LngLatBounds()
+      ;(props.realTurbines ?? []).forEach(turbine => bounds.extend([turbine.lon, turbine.lat]))
+      map.fitBounds(bounds, { padding: 90, pitch: 32, duration: 1800, maxZoom: 8.2 })
+    }
     source('factories', { type: 'FeatureCollection', features: props.factories.map(f => ({ type: 'Feature', properties: { id: f.id, color: FACTORY_COLORS[f.id] ?? '#38bdf8' }, geometry: { type: 'Point', coordinates: [f.lng, f.lat] } })) })
     source('substations', { type: 'FeatureCollection', features: props.substations.map(s => ({ type: 'Feature', properties: { id: s.id }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } })) })
     const allocation = new Map((props.activePlan?.allocations ?? []).map(x => [x.project_id, x.factory_id]))
@@ -395,6 +447,7 @@ export default function TwinMap(props: Props) {
       substations: ['substation-point'], projects: ['project-bars'],
       factories: ['factory-point'], routes: ['route-line', 'route-glow'], alerts: ['alert-point'],
       entities: ['simulation-icons', 'simulation-hit'], powerFlow: ['power-flow-glow', 'power-flow-line', 'power-flow-arrow'],
+      realWind: ['real-wind-points'],
     }
     Object.entries(states).forEach(([key, layerIds]) => layerIds.forEach(id => {
       if (map.getLayer(id)) map.setLayoutProperty(id, 'visibility', props.layers[key] ? 'visible' : 'none')

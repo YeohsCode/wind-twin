@@ -18,6 +18,9 @@ export type SceneTurbine = {
   rotorRpm: number
   lat: number
   lng: number
+  model?: string
+  hubHeightM?: number
+  rotorDiameterM?: number
   x: number
   z: number
 }
@@ -60,6 +63,10 @@ const NACELLE_LENGTH_UNITS = 22 / METERS_PER_SCENE_UNIT
 const ROTOR_RADIUS_UNITS = 58 / METERS_PER_SCENE_UNIT
 const CLOSEUP_SCALE = 1 / METERS_PER_SCENE_UNIT
 const CRANE_SCALE = 0.55
+const turbineTowerUnits = (turbine: SceneTurbine) =>
+  (turbine.hubHeightM ?? 160) / METERS_PER_SCENE_UNIT
+const turbineRotorUnits = (turbine: SceneTurbine) =>
+  (turbine.rotorDiameterM ?? 116) / (2 * METERS_PER_SCENE_UNIT)
 function basemapZoom(sideMeters: number) {
   const mosaicMeters = 40_075_016.868 * 3
   return Math.max(11, Math.min(15, Math.floor(Math.log2(mosaicMeters / Math.max(1, sideMeters * 1.2)))))
@@ -408,7 +415,8 @@ export default function SandboxScene({
         const yaw = 0.65 + index * 0.18
         position.set(turbine.x, terrainHeight(turbine.x, turbine.z), turbine.z)
         quaternion.setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw)
-        scale.setScalar(TOWER_HEIGHT_UNITS / modelHeight)
+        const towerUnits = turbineTowerUnits(turbine)
+        scale.set(TOWER_HEIGHT_UNITS / modelHeight, towerUnits / modelHeight, TOWER_HEIGHT_UNITS / modelHeight)
         matrix.compose(position, quaternion, scale)
         tower.setMatrixAt(index, matrix)
         color.set(turbine.status === 'fault' ? '#ff5a48' : turbine.status === 'warning' ? '#ffb020' : '#f8fbff')
@@ -431,7 +439,7 @@ export default function SandboxScene({
       if (closeupModel && selectedTurbine) {
         const index = dataRef.current.indexOf(selectedTurbine)
         closeupRoot.position.set(selectedTurbine.x, terrainHeight(selectedTurbine.x, selectedTurbine.z), selectedTurbine.z)
-        closeupRoot.scale.setScalar(CLOSEUP_SCALE)
+        closeupRoot.scale.setScalar(turbineTowerUnits(selectedTurbine) / TOWER_HEIGHT_UNITS * CLOSEUP_SCALE)
         closeupRoot.rotation.y = 0.65 + index * 0.18
       }
       turbineMapRef.current.forEach((group, id) => {
@@ -489,12 +497,16 @@ export default function SandboxScene({
         })
         const tower = new THREE.Mesh(towerGeometry, bodyMaterial)
         const nacelle = new THREE.Mesh(nacelleGeometry, bodyMaterial)
-        nacelle.position.set(NACELLE_LENGTH_UNITS * 0.34, TOWER_HEIGHT_UNITS, 0)
+        const towerUnits = turbineTowerUnits(turbine)
+        const rotorUnits = turbineRotorUnits(turbine)
+        tower.scale.y = towerUnits / TOWER_HEIGHT_UNITS
+        nacelle.position.set(NACELLE_LENGTH_UNITS * 0.34, towerUnits, 0)
         const hub = new THREE.Mesh(hubGeometry, bodyMaterial)
-        hub.position.set(NACELLE_LENGTH_UNITS * 0.78, TOWER_HEIGHT_UNITS, 0)
+        hub.position.set(NACELLE_LENGTH_UNITS * 0.78, towerUnits, 0)
 
         const rotor = new THREE.Group()
         rotor.position.copy(hub.position)
+        rotor.scale.setScalar(rotorUnits / ROTOR_RADIUS_UNITS)
         rotor.userData = { turbineId: turbine.id, clickable: true }
         for (let bladeIndex = 0; bladeIndex < 3; bladeIndex += 1) {
           const blade = new THREE.Mesh(bladeGeometry, bodyMaterial)
@@ -511,7 +523,7 @@ export default function SandboxScene({
         const warning = new THREE.Mesh(warningGeometry, new THREE.MeshStandardMaterial({
           color: lampColor, emissive: lampColor, emissiveIntensity: nightRef.current ? 1.5 : 0.35,
         }))
-        warning.position.set(0, TOWER_HEIGHT_UNITS + 0.28, 0)
+        warning.position.set(0, towerUnits + 0.28, 0)
         warning.userData = { status: turbine.status }
         warning.visible = turbine.status !== 'running'
         warningLightsRef.current.push(warning)
@@ -524,7 +536,7 @@ export default function SandboxScene({
           onSelect(turbine.id)
         })
         const label = new CSS2DObject(labelElement)
-        label.position.set(0, TOWER_HEIGHT_UNITS + ROTOR_RADIUS_UNITS + 1.2, 0)
+        label.position.set(0, towerUnits + rotorUnits + 1.2, 0)
 
         group.add(tower, nacelle, hub, rotor, warning, label)
         scene.add(group)
@@ -839,7 +851,7 @@ export default function SandboxScene({
       const turbine = dataRef.current.find(item => item.id === id)
       if (!turbine) return
       const ground = terrainHeight(turbine.x, turbine.z)
-      const target = new THREE.Vector3(turbine.x, ground + TOWER_HEIGHT_UNITS, turbine.z)
+      const target = new THREE.Vector3(turbine.x, ground + turbineTowerUnits(turbine), turbine.z)
       const offset = new THREE.Vector3(8.4, 5.2, -14.4)
       controls.minDistance = 3
       controls.target.copy(target)

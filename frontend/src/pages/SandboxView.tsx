@@ -10,6 +10,7 @@ type ViewMode = 'overview' | 'top' | 'side' | 'orbit'
 type CameraMode = 'follow' | 'free'
 type BaseTurbine = Turbine & { x: number; z: number }
 type FarmOption = Pick<WindFarm, 'id' | 'name' | 'turbineCount'> & { lat: number; lng: number }
+type DisplayFarm = FarmOption & { real?: boolean }
 const DEFAULT_PERIOD = '2027-Q3'
 
 function phase(id: string) {
@@ -55,6 +56,9 @@ function liveTurbine(turbine: BaseTurbine, index: number, seconds: number): Scen
     rotorRpm: turbine.status === 'fault' ? 0 : 8.2 + 4.6 * Math.max(0, powerKw / turbine.rated_power_kw),
     lat: turbine.lat,
     lng: turbine.lng,
+    model: turbine.model,
+    hubHeightM: turbine.height_m,
+    rotorDiameterM: turbine.model.includes('127') ? 127 : turbine.model.includes('120') ? 120 : turbine.model.includes('116') ? 116 : 110,
     x: turbine.x,
     z: turbine.z,
   }
@@ -68,6 +72,7 @@ const ENTITY_LABELS = {
 
 export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandbox' | 'gis') => void }) {
   const [farms, setFarms] = useState<FarmOption[]>([])
+  const [realFarms, setRealFarms] = useState<import('../types').RealWindFarm[]>([])
   const [baseTurbines, setBaseTurbines] = useState<BaseTurbine[]>([])
   const [periods, setPeriods] = useState<string[]>([])
   const [period, setPeriod] = useState(DEFAULT_PERIOD)
@@ -141,7 +146,9 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
       setTerrainState({
         version: terrainVersionRef.current,
         status: 'procedural',
-        sourceText: `PROCEDURAL FALLBACK · ${farmId.toUpperCase()}`,
+        sourceText: farmId.startsWith('real:')
+          ? 'PROCEDURAL TERRAIN (US DEM NOT LOADED)'
+          : `PROCEDURAL FALLBACK · ${farmId.toUpperCase()}`,
       })
       setTerrainVersion(terrainVersionRef.current)
       setTerrainNotice('实时高程不可用，已切换程序地形')
@@ -158,10 +165,11 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   useEffect(() => {
     let mounted = true
     async function load() {
-      const [overview, farmRows, alertRows] = await Promise.all([
+      const [overview, farmRows, alertRows, usgsFarms] = await Promise.all([
         api.overview(),
         api.windFarms(),
         api.alerts(),
+        api.realWindFarms().catch(() => []),
       ])
       if (!mounted) return
       const options: FarmOption[] = farmRows
@@ -174,6 +182,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
         }))
       const availablePeriods = overview.periods ?? []
       setFarms(options)
+      setRealFarms(usgsFarms)
       setAlerts(alertRows)
       setPeriods(availablePeriods)
       const initialPeriod = availablePeriods.includes(period) ? period : availablePeriods[0] ?? period
@@ -222,7 +231,30 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
   }, [simulationEnabled, simulationPlaying])
 
   useEffect(() => {
-    if (!selectedFarmId || !periods.length) return
+    if (!selectedFarmId) return
+    if (selectedFarmId.startsWith('real:')) {
+      let mounted = true
+      api.realWindTurbines(selectedFarmId.slice(5)).then(usgsTurbines => {
+        if (!mounted) return
+        const mapped: Turbine[] = usgsTurbines.map((item, index) => ({
+          id: item.id,
+          wind_farm_id: item.farmId,
+          name: `${item.farmName} T${index + 1}`,
+          lat: item.lat,
+          lng: item.lon,
+          model: item.model,
+          rated_power_kw: item.capKw,
+          status: 'running',
+          height_m: item.hubHeightM,
+          windFarmName: item.farmName,
+          regionId: 'usgs-real',
+          operation: { power_kw: item.capKw * 0.74, wind_speed: 8.5, availability: 0.98, status: 'running', period: 'USGS' },
+        }))
+        void showFarm(selectedFarmId, mapped, 'USGS')
+      }).catch(() => setLoadError('USGS 风机点位加载失败'))
+      return () => { mounted = false }
+    }
+    if (!periods.length) return
     const requestNonce = ++periodRequestRef.current
     setPeriodLoading(true)
     api.turbines(period, selectedFarmId)
@@ -321,7 +353,10 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
     { id: -2, level: 'warning', source_type: 'turbine', source_id: 'WT-12', title: '偏航误差偏大', detail: '正在自动校准对风角度', occurred_at: new Date(Date.now() - 1000 * 60 * 47).toISOString(), resolved: false },
   ]
   const visibleAlerts = (alerts.length ? alerts : fallbackAlerts).slice(0, 4)
-  const selectedFarmName = farms.find(farm => farm.id === selectedFarmId)?.name ?? '未选择风场'
+  const selectedFarmName = [
+    ...farms,
+    ...realFarms.map(farm => ({ ...farm, id: `real:${farm.id}`, real: true })),
+  ].find(farm => farm.id === selectedFarmId)?.name ?? '未选择风场'
   const [collapsed, setCollapsed] = useState({ left: false, right: false, bottom: false })
   const togglePanel = (key: 'left' | 'right' | 'bottom') => setCollapsed(current => ({ ...current, [key]: !current[key] }))
 
@@ -350,6 +385,9 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
             >
               {farms.map(farm => (
                 <option key={farm.id} value={farm.id}>{farm.name} · {farm.turbineCount}台</option>
+              ))}
+              {realFarms.map(farm => (
+                <option key={farm.id} value={`real:${farm.id}`}>USGS {farm.name} · {farm.turbineCount}台</option>
               ))}
             </select>
           </label>
@@ -510,7 +548,7 @@ export default function SandboxView({ onNavigate }: { onNavigate: (route: 'sandb
             <div className="telemetry-head">
               <div>
                 <h3>{selected?.displayId ?? 'WT-01'}</h3>
-                <small>{((selected?.ratedPowerKw ?? 3600) / 1000).toFixed(1)} MW 额定 · 状态 {selected ? STATUS_TEXT[selected.status] : '运行'}</small>
+                <small>{selected?.model ?? 'SIM-TURBINE'} · {((selected?.ratedPowerKw ?? 3600) / 1000).toFixed(1)} MW · 状态 {selected ? STATUS_TEXT[selected.status] : '运行'}</small>
               </div>
               <b>{selected?.liveMw.toFixed(2) ?? '--'}<em>MW</em></b>
             </div>

@@ -1,6 +1,17 @@
 export type Region = { id: string; name: string; parent_id?: string; level: string; center_lat: number; center_lng: number; boundary: number[][] }
 export type Operation = { power_kw: number; wind_speed: number; availability: number; status: string; period: string }
 export type Turbine = { id: string; wind_farm_id: string; name: string; lat: number; lng: number; model: string; rated_power_kw: number; status: 'running'|'warning'|'fault'; height_m: number; windFarmName?: string; regionId?: string; operation?: Operation|null }
+export type RealWindFarm = {
+  id: string; name: string; state: string; lat: number; lng: number
+  turbineCount: number; capacityMw: number
+  dominantManufacturer: string; dominantModel: string; commissioningYear: number
+  source: string
+}
+export type RealWindTurbine = {
+  id: string; farmId: string; farmName: string; state: string
+  lat: number; lon: number; capKw: number; hubHeightM: number; rotorDiameterM: number
+  manufacturer: string; model: string; year: number
+}
 export type WindFarm = { id: string; name: string; region_id: string; lat: number; lng: number; elevation_m: number; boundary: number[][]; turbineCount: number; capacityMw: number; statusCounts: Record<string, number> }
 export type Factory = { id: string; name: string; region_id: string; lat: number; lng: number; annual_capacity_mw: number; status: string; load_percent: number }
 export type Project = { id: string; name: string; region_id: string; lat: number; lng: number; capacity_mw: number; phase: string; status: string; planned_year: number; delivery_year: number; demand_index: number }
