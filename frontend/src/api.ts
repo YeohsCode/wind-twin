@@ -10,6 +10,12 @@ export const api = {
   windFarms: () => request<any[]>('/api/wind-farms'),
   realWindFarms: () => request<import('./types').RealWindFarm[]>('/api/realwind/farms'),
   realWindTurbines: (farmId: string) => request<import('./types').RealWindTurbine[]>(`/api/realwind/farms/${encodeURIComponent(farmId)}/turbines`),
+  unifiedWindFarms: (country?: string) =>
+    request<import('./types').UnifiedWindFarm[]>(`/api/wind/farms${country ? `?country=${encodeURIComponent(country)}` : ''}`),
+  unifiedWindTurbines: (query: { source: 'osm'; bbox: string; zoom: number } | { source: 'sim' } | { source: 'usgs'; farmId: string }) => {
+    const params = new URLSearchParams(query as any)
+    return request<import('./types').UnifiedWindTurbine[]>(`/api/wind/turbines?${params}`)
+  },
   mapFeatures: (windFarmId?: string) =>
     request<any>(`/api/map-features${windFarmId ? `?wind_farm_id=${encodeURIComponent(windFarmId)}` : ''}`),
   turbines: (period: string, windFarmId?: string) =>

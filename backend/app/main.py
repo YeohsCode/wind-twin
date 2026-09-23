@@ -12,6 +12,7 @@ from .seed import run_seed
 from .services import rule_actions, call_llm, chart_specs, generate_report
 from .simulation_api import router as simulation_router
 from .realwind_api import router as realwind_router
+from .unified_wind_api import router as unified_wind_router
 
 app = FastAPI(title="Wind Energy Planning Digital Twin API", version="0.1.0")
 settings = get_settings()
@@ -24,6 +25,7 @@ app.add_middleware(
 )
 app.include_router(simulation_router)
 app.include_router(realwind_router)
+app.include_router(unified_wind_router)
 
 
 @app.on_event("startup")

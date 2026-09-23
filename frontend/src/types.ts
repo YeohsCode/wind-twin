@@ -12,6 +12,18 @@ export type RealWindTurbine = {
   lat: number; lon: number; capKw: number; hubHeightM: number; rotorDiameterM: number
   manufacturer: string; model: string; year: number
 }
+export type UnifiedWindTurbine = {
+  id: string; source: 'usgs' | 'osm' | 'sim'; lat: number; lng: number
+  capKw?: number; hubHeightM?: number; rotorDiameterM?: number
+  manufacturer?: string; model?: string; commissioningYear?: number
+  farmId?: string; name?: string; aggregateCount?: number
+}
+export type UnifiedWindFarm = {
+  id: string; source: 'wri' | 'usgs' | 'sim'; name: string; country: string
+  lat: number; lng: number; capacityMw?: number; turbineCount?: number
+  commissioningYear?: number
+}
+export type MapViewport = { bbox: [number, number, number, number]; zoom: number }
 export type WindFarm = { id: string; name: string; region_id: string; lat: number; lng: number; elevation_m: number; boundary: number[][]; turbineCount: number; capacityMw: number; statusCounts: Record<string, number> }
 export type Factory = { id: string; name: string; region_id: string; lat: number; lng: number; annual_capacity_mw: number; status: string; load_percent: number }
 export type Project = { id: string; name: string; region_id: string; lat: number; lng: number; capacity_mw: number; phase: string; status: string; planned_year: number; delivery_year: number; demand_index: number }

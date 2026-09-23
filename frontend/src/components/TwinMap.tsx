@@ -3,7 +3,8 @@ import maplibregl, { Map as MLMap, StyleSpecification } from 'maplibre-gl'
 import { Protocol } from 'pmtiles'
 import * as THREE from 'three'
 import { TurbineLayer } from './TurbineLayer'
-import type { Alert, Factory, Project, RealWindFarm, RealWindTurbine, Region, Route, Substation, SimulationEntity, Turbine, WindFarm, Plan } from '../types'
+import { UnifiedTurbineLayer } from './UnifiedTurbineLayer'
+import type { Alert, Factory, MapViewport, Project, RealWindFarm, RealWindTurbine, Region, Route, Substation, SimulationEntity, Turbine, UnifiedWindFarm, UnifiedWindTurbine, WindFarm, Plan } from '../types'
 
 type Layers = Record<string, boolean>
 type Props = {
@@ -12,6 +13,8 @@ type Props = {
   layers: Layers; period: string; focusRegion: string | null; focusFarm: string | null
   entities?: SimulationEntity[]; selectedEntityId?: string | null
   realFarms?: RealWindFarm[]; realTurbines?: RealWindTurbine[]
+  unifiedFarms?: UnifiedWindFarm[]; unifiedTurbines?: UnifiedWindTurbine[]
+  onViewportChange?: (viewport: MapViewport) => void
   onSelectTurbine: (t: Turbine) => void; onSelectProject: (p: Project) => void
   onSelectRegion: (id: string) => void; onSelectFarm: (id: string) => void
   onSelectEntity?: (entity: SimulationEntity) => void
@@ -28,6 +31,8 @@ const REAL_FARM_COLORS: Record<string, string> = {
   'high-banks': '#22c55e',
   'western-spirit': '#fb7185',
 }
+const SOURCE_COLORS: Record<string, string> = { osm: '#22d3ee', usgs: '#facc15', sim: '#a78bfa', wri: '#f97316' }
+const SOURCE_LABELS: Record<string, string> = { osm: 'OSM', usgs: 'USGS', sim: '模拟', wri: 'WRI GPPD' }
 const STATUS_COLORS: Record<string, string> = { construction: '#f97316', approved: '#38bdf8', reserve: '#94a3b8' }
 const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
 const SIM_TYPE_LABELS: Record<string, string> = {
@@ -98,6 +103,80 @@ function canvasImage(canvas: HTMLCanvasElement) {
   return { width: canvas.width, height: canvas.height, data: context.getImageData(0, 0, canvas.width, canvas.height).data }
 }
 
+function makeDropIcon(color: string) {
+  // 倒置水滴 = 地图 marker 形状：圆头在上、尖端在下，用径向渐变+高光营造 3D 立体感
+  const canvas = document.createElement('canvas')
+  canvas.width = 44; canvas.height = 58
+  const context = canvas.getContext('2d')!
+  const cx = 22
+  const tipY = 54
+  const bodyTop = 6
+  const bodyR = 15
+  const bodyCy = bodyTop + bodyR
+  context.save()
+  // 主体轮廓：底部尖端 + 上方圆形
+  context.beginPath()
+  context.moveTo(cx, tipY)
+  // 左侧曲线到圆
+  context.bezierCurveTo(cx - 16, tipY - 24, cx - bodyR, bodyCy - 6, cx - bodyR, bodyCy - 2)
+  context.arc(cx, bodyCy - 2, bodyR, Math.PI, 0, false)
+  // 右侧曲线回尖端
+  context.bezierCurveTo(cx + bodyR, bodyCy - 6, cx + 16, tipY - 24, cx, tipY)
+  context.closePath()
+  // 3D 球面渐变：左上受光、右下暗部
+  const gradient = context.createRadialGradient(cx - 5, bodyCy - 10, 2, cx, bodyCy, bodyR + 16)
+  gradient.addColorStop(0, '#a5ecff')
+  gradient.addColorStop(0.35, '#38bdf8')
+  gradient.addColorStop(0.75, '#0e7fb8')
+  gradient.addColorStop(1, '#065a86')
+  context.fillStyle = gradient
+  context.fill()
+  context.strokeStyle = 'rgba(190,240,255,.85)'
+  context.lineWidth = 1.4
+  context.stroke()
+  // 左上高光
+  context.fillStyle = 'rgba(255,255,255,.75)'
+  context.beginPath()
+  context.ellipse(cx - 5.5, bodyCy - 8, 3.6, 5.4, -0.5, 0, Math.PI * 2)
+  context.fill()
+  context.fillStyle = 'rgba(255,255,255,.4)'
+  context.beginPath()
+  context.ellipse(cx + 4, bodyCy + 4, 2.2, 3.2, 0.6, 0, Math.PI * 2)
+  context.fill()
+  // 尖端接触阴影
+  context.fillStyle = 'rgba(3,12,22,.5)'
+  context.beginPath()
+  context.ellipse(cx, tipY + 1.5, 5, 2, 0, 0, Math.PI * 2)
+  context.fill()
+  context.restore()
+  return canvas
+}
+
+function makeTurbineIcon(color: string) {
+  const canvas = document.createElement('canvas')
+  canvas.width = 36; canvas.height = 52
+  const context = canvas.getContext('2d')!
+  context.strokeStyle = '#e8fbff'; context.lineWidth = 3.5; context.lineCap = 'round'
+  const tower = context.createLinearGradient(15, 0, 21, 0)
+  tower.addColorStop(0, 'rgba(255,255,255,.95)'); tower.addColorStop(.5, color); tower.addColorStop(1, 'rgba(60,90,120,.9)')
+  context.strokeStyle = tower
+  context.beginPath(); context.moveTo(18, 46); context.lineTo(18, 17); context.stroke()
+  context.strokeStyle = color; context.lineWidth = 3.2
+  for (let index = 0; index < 3; index += 1) {
+    const angle = index * Math.PI * 2 / 3 - Math.PI / 2
+    context.beginPath(); context.moveTo(18, 17)
+    context.lineTo(18 + Math.cos(angle) * 14, 17 + Math.sin(angle) * 14); context.stroke()
+  }
+  context.fillStyle = '#f8fbff'; context.beginPath(); context.ellipse(18, 17, 3.2, 2.4, 0, 0, Math.PI * 2); context.fill()
+  return canvas
+}
+
+function escapeHtml(value: unknown) {
+  return String(value ?? '').replace(/[&<>"']/g, character => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[character] ?? character))
+}
+
 function routePosition(routes: Route[], routeId: string | undefined, progress: number, reverse = false): [number, number] | null {
   const route = routes.find(item => item.id === routeId)
   if (!route?.geometry.length) return null
@@ -157,11 +236,13 @@ export default function TwinMap(props: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MLMap | null>(null)
   const turbineLayerRef = useRef<TurbineLayer | null>(null)
+  const unifiedTurbineLayerRef = useRef<UnifiedTurbineLayer | null>(null)
   const readyRef = useRef(false)
-  const realWindFitRef = useRef(false)
   const [readyTick, setReadyTick] = useState(0)
   const clickHandlers = useRef(props)
   clickHandlers.current = props
+  const viewportHandler = useRef(props.onViewportChange)
+  viewportHandler.current = props.onViewportChange
 
   useEffect(() => {
     if (mapRef.current || !containerRef.current) return
@@ -183,6 +264,32 @@ export default function TwinMap(props: Props) {
     ;(window as any).__map = map
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), 'bottom-right')
     map.addControl(new maplibregl.ScaleControl({ maxWidth: 120 }), 'bottom-left')
+    let viewportTimer = 0
+    const emitViewport = () => {
+      window.clearTimeout(viewportTimer)
+      viewportTimer = window.setTimeout(() => {
+        const bounds = map.getBounds().toArray()
+        viewportHandler.current?.({
+          bbox: [bounds[0][0], bounds[0][1], bounds[1][0], bounds[1][1]],
+          zoom: map.getZoom(),
+        })
+      }, 300)
+    }
+    map.on('move', emitViewport)
+    const updateUnifiedMode = () => {
+      const zoom = map.getZoom()
+      const metersPerPixel = 40075016.686 * Math.cos(map.getCenter().lat * Math.PI / 180) / 2 ** (zoom + 8)
+      const metersPerScreenCm = metersPerPixel * 96 / 2.54
+      const turbineDetail = metersPerScreenCm < 1000
+      const setVisibility = (layerId: string, visible: boolean) => {
+        if (map.getLayer(layerId)) map.setLayoutProperty(layerId, 'visibility', visible ? 'visible' : 'none')
+      }
+      setVisibility('unified-turbines-3d', turbineDetail && clickHandlers.current.layers.realWind)
+      setVisibility('unified-turbine-hit', turbineDetail && clickHandlers.current.layers.realWind)
+      setVisibility('unified-turbine-sprites', turbineDetail && clickHandlers.current.layers.realWind)
+      setVisibility('unified-farm-drops', clickHandlers.current.layers.realWind && !turbineDetail)
+    }
+    map.on('zoom', updateUnifiedMode)
     map.on('style.load', () => {
       readyRef.current = true
       map.setSky({
@@ -195,7 +302,7 @@ export default function TwinMap(props: Props) {
         'atmosphere-blend': ['interpolate', ['linear'], ['zoom'], 0, 0.6, 6, 0.35, 10, 0.12],
       })
       map.setTerrain({ source: 'terrain', exaggeration: 1.25 })
-      const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits', 'simulationEntities', 'powerFlow', 'powerArrows', 'realTurbines']
+      const geoSources = ['regions', 'farms', 'farmPoints', 'projects', 'factories', 'substations', 'routes', 'alerts', 'turbineHits', 'simulationEntities', 'powerFlow', 'powerArrows', 'realTurbines', 'unifiedFarms', 'unifiedTurbineHits']
       geoSources.forEach(id => { if (!map.getSource(id)) map.addSource(id, { type: 'geojson', data: emptyFC }) })
       const initial = [
       { id: 'region-fill', type: 'fill', source: 'regions', filter: ['==', ['get', 'kind'], 'region'], paint: { 'fill-color': '#7dd3fc', 'fill-opacity': 0 } },
@@ -260,11 +367,64 @@ export default function TwinMap(props: Props) {
           'circle-stroke-width': 0.7,
         },
       })
+      for (const [key, color] of Object.entries(SOURCE_COLORS)) {
+        if (!map.hasImage(`drop-${key}`)) map.addImage(`drop-${key}`, canvasImage(makeDropIcon(color)), { pixelRatio: 2 })
+        if (!map.hasImage(`turbine-${key}`)) map.addImage(`turbine-${key}`, canvasImage(makeTurbineIcon(color)), { pixelRatio: 2 })
+      }
+      map.addLayer({
+        id: 'unified-farm-drops', type: 'symbol', source: 'unifiedFarms', layout: {
+          'icon-image': ['concat', 'drop-', ['get', 'source']], 'icon-size': 0.62,
+          'icon-anchor': 'bottom', 'icon-allow-overlap': true, 'icon-ignore-placement': true,
+        },
+      })
+      map.addLayer({
+        id: 'unified-turbine-hit', type: 'circle', source: 'unifiedTurbineHits',
+        paint: { 'circle-radius': 7, 'circle-color': '#fff', 'circle-opacity': 0.01 },
+      })
+      map.addLayer({
+        id: 'unified-turbine-sprites', type: 'symbol', source: 'unifiedTurbineHits', layout: {
+          'icon-image': ['concat', 'turbine-', ['get', 'source']],
+          'icon-size': ['interpolate', ['linear'], ['zoom'], 10.5, 0.1, 12, 0.18, 14, 0.38, 16, 0.7],
+          'icon-allow-overlap': true, 'icon-ignore-placement': true,
+        },
+      })
       const layer = new TurbineLayer([114.4, 40.8])
       turbineLayerRef.current = layer
       if (!map.getLayer(layer.id)) map.addLayer(layer as any)
       layer.setData(clickHandlers.current.turbines)
+      const unifiedLayer = new UnifiedTurbineLayer()
+      unifiedTurbineLayerRef.current = unifiedLayer
+      if (!map.getLayer(unifiedLayer.id)) map.addLayer(unifiedLayer as any)
+      unifiedLayer.setData(clickHandlers.current.unifiedTurbines ?? [])
+      updateUnifiedMode()
       setReadyTick(value => value + 1)
+    })
+
+    const tooltip = document.createElement('div')
+    tooltip.className = 'unified-tooltip'
+    tooltip.hidden = true
+    containerRef.current.appendChild(tooltip)
+    const hideTooltip = () => { tooltip.hidden = true }
+    map.on('mouseout', hideTooltip)
+    map.on('mousemove', event => {
+      const farmHits = map.queryRenderedFeatures(event.point, { layers: ['unified-farm-drops'] })
+      const turbineHits = map.queryRenderedFeatures(event.point, { layers: ['unified-turbine-hit'] })
+      const hit = farmHits[0] ?? turbineHits[0]
+      if (!hit) { hideTooltip(); return }
+      const item = hit.properties as any
+      const source = SOURCE_LABELS[item.source] ?? item.source
+      const capacity = item.capacityMw ? `${Number(item.capacityMw).toFixed(1)} MW` : item.capKw ? `${Number(item.capKw).toLocaleString()} kW` : '容量未知'
+      const model = item.model || item.manufacturer || '机型未知'
+      tooltip.innerHTML = `
+        <strong>${escapeHtml(item.name ?? `OSM 风机点位 #${item.id}`)}</strong>
+        <span>${escapeHtml(source)}${item.country ? ` · ${escapeHtml(item.country)}` : ''}</span>
+        <span>${escapeHtml(capacity)} · ${escapeHtml(model)}</span>
+      `
+      const bounds = containerRef.current!.getBoundingClientRect()
+      tooltip.style.left = `${event.point.x + 14}px`
+      tooltip.style.top = `${event.point.y + 12}px`
+      tooltip.style.transform = event.point.x > bounds.width - 240 ? 'translateX(-110%)' : 'none'
+      tooltip.hidden = false
     })
 
     map.on('click', event => {
@@ -274,6 +434,26 @@ export default function TwinMap(props: Props) {
         if (entity) { clickHandlers.current.onSelectEntity?.(entity); return }
       }
       const farmHitsFirst = map.queryRenderedFeatures(event.point, { layers: ['farm-hit'] })
+      const unifiedFarmHits = map.queryRenderedFeatures(event.point, { layers: ['unified-farm-drops'] })
+      if (unifiedFarmHits.length) {
+        const farm = unifiedFarmHits[0].properties as any
+        new maplibregl.Popup({ offset: 12, closeButton: false }).setLngLat(event.lngLat).setHTML(`
+          <strong>${escapeHtml(farm.name)}</strong><br>
+          ${escapeHtml(SOURCE_LABELS[farm.source] ?? farm.source)} · ${farm.capacityMw ? `${Number(farm.capacityMw).toFixed(1)} MW` : '容量未知'}<br>
+          ${farm.turbineCount ? `${farm.turbineCount} 台 · ` : ''}${farm.commissioningYear ? `投产 ${farm.commissioningYear}` : '投产年份未知'}
+        `).addTo(map)
+        return
+      }
+      const unifiedTurbineHits = map.queryRenderedFeatures(event.point, { layers: ['unified-turbine-hit'] })
+      if (unifiedTurbineHits.length) {
+        const turbine = unifiedTurbineHits[0].properties as any
+        new maplibregl.Popup({ offset: 12, closeButton: false }).setLngLat(event.lngLat).setHTML(`
+          <strong>${escapeHtml(turbine.name ?? `OSM 风机点位 #${turbine.id}`)}</strong><br>
+          ${escapeHtml(SOURCE_LABELS[turbine.source] ?? turbine.source)} · ${turbine.capKw ? `${Number(turbine.capKw).toLocaleString()} kW` : '容量未知'}<br>
+          ${turbine.model ?? turbine.manufacturer ?? '机型未知'}
+        `).addTo(map)
+        return
+      }
       const realHits = map.queryRenderedFeatures(event.point, { layers: ['real-wind-points'] })
       if (realHits.length) {
         const item = realHits[0].properties as any
@@ -320,7 +500,11 @@ export default function TwinMap(props: Props) {
         }
       }
     })
-    return () => { map.remove(); maplibregl.removeProtocol('mapterhorn') }
+    return () => {
+      window.clearTimeout(viewportTimer)
+      containerRef.current?.querySelector('.unified-tooltip')?.remove()
+      map.remove(); maplibregl.removeProtocol('mapterhorn')
+    }
   }, [])
 
   useEffect(() => {
@@ -358,11 +542,41 @@ export default function TwinMap(props: Props) {
         geometry: { type: 'Point', coordinates: [turbine.lon, turbine.lat] },
       })),
     })
-    if (props.layers.realWind && (props.realFarms?.length ?? 0) > 0 && (props.realTurbines?.length ?? 0) > 0 && !realWindFitRef.current) {
-      realWindFitRef.current = true
-      const bounds = new maplibregl.LngLatBounds()
-      ;(props.realTurbines ?? []).forEach(turbine => bounds.extend([turbine.lon, turbine.lat]))
-      map.fitBounds(bounds, { padding: 90, pitch: 32, duration: 1800, maxZoom: 8.2 })
+    source('unifiedFarms', {
+      type: 'FeatureCollection',
+      features: (props.unifiedFarms ?? []).filter(farm => (
+        Number.isFinite(farm.lat) && farm.lat >= -90 && farm.lat <= 90 &&
+        Number.isFinite(farm.lng) && farm.lng >= -180 && farm.lng <= 180
+      )).map(farm => ({
+        type: 'Feature',
+        properties: {
+          id: farm.id, source: farm.source, name: farm.name, country: farm.country,
+          capacityMw: farm.capacityMw, turbineCount: farm.turbineCount,
+          commissioningYear: farm.commissioningYear,
+        },
+        geometry: { type: 'Point', coordinates: [farm.lng, farm.lat] },
+      })),
+    })
+    source('unifiedTurbineHits', {
+      type: 'FeatureCollection',
+      features: (props.unifiedTurbines ?? []).map(turbine => ({
+        type: 'Feature',
+        properties: {
+          id: turbine.id, source: turbine.source, name: turbine.name,
+          capKw: turbine.capKw, model: turbine.model, manufacturer: turbine.manufacturer,
+        },
+        geometry: { type: 'Point', coordinates: [turbine.lng, turbine.lat] },
+      })),
+    })
+    unifiedTurbineLayerRef.current?.setData(props.unifiedTurbines ?? [])
+    if (map.getLayer('unified-turbines-3d')) {
+      const zoom = map.getZoom()
+      const metersPerPixel = 40075016.686 * Math.cos(map.getCenter().lat * Math.PI / 180) / 2 ** (zoom + 8)
+      const turbineDetail = metersPerPixel * 96 / 2.54 < 1000
+      map.setLayoutProperty('unified-turbines-3d', 'visibility', turbineDetail && props.layers.realWind ? 'visible' : 'none')
+      map.setLayoutProperty('unified-turbine-hit', 'visibility', turbineDetail && props.layers.realWind ? 'visible' : 'none')
+      map.setLayoutProperty('unified-turbine-sprites', 'visibility', turbineDetail && props.layers.realWind ? 'visible' : 'none')
+      map.setLayoutProperty('unified-farm-drops', 'visibility', props.layers.realWind && !turbineDetail ? 'visible' : 'none')
     }
     source('factories', { type: 'FeatureCollection', features: props.factories.map(f => ({ type: 'Feature', properties: { id: f.id, color: FACTORY_COLORS[f.id] ?? '#38bdf8' }, geometry: { type: 'Point', coordinates: [f.lng, f.lat] } })) })
     source('substations', { type: 'FeatureCollection', features: props.substations.map(s => ({ type: 'Feature', properties: { id: s.id }, geometry: { type: 'Point', coordinates: [s.lng, s.lat] } })) })
@@ -437,7 +651,8 @@ export default function TwinMap(props: Props) {
     source('powerFlow', { type: 'FeatureCollection', features: flowFeatures })
     source('powerArrows', { type: 'FeatureCollection', features: flowFeatures })
     turbineLayerRef.current?.setData(props.turbines)
-  }, [readyTick, props.regions, props.farms, props.turbines, props.factories, props.projects, props.substations, props.routes, props.alerts, props.activePlan, props.focusRegion])
+    unifiedTurbineLayerRef.current?.setData(props.unifiedTurbines ?? [])
+  }, [readyTick, props.regions, props.farms, props.turbines, props.factories, props.projects, props.substations, props.routes, props.alerts, props.activePlan, props.focusRegion, props.unifiedFarms, props.unifiedTurbines])
 
   useEffect(() => {
     const map = mapRef.current

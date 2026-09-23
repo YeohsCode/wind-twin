@@ -1,11 +1,11 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import TwinMap from '../components/TwinMap'
 import Chart from '../components/Chart'
 import { api } from '../api'
-import type { AIResult, Alert, Factory, Plan, Project, RealWindFarm, RealWindTurbine, Region, Route, SceneAction, SimulationEntity, SimulationState, SimulationTimeseries, Substation, Turbine, WindFarm } from '../types'
+import type { AIResult, Alert, Factory, MapViewport, Plan, Project, RealWindFarm, RealWindTurbine, Region, Route, SceneAction, SimulationEntity, SimulationState, SimulationTimeseries, Substation, Turbine, UnifiedWindFarm, UnifiedWindTurbine, WindFarm } from '../types'
 import type { TurbineHistory } from '../api'
 
-const ALL_LAYERS = { regions: false, heat: false, windFarms: true, farmBoundary: false, turbines: false, projects: false, factories: false, substations: true, routes: true, alerts: false, entities: true, powerFlow: true, realWind: false }
+const ALL_LAYERS = { regions: false, heat: false, windFarms: true, farmBoundary: false, turbines: true, projects: false, factories: false, substations: true, routes: true, alerts: false, entities: true, powerFlow: true, realWind: true }
 const DEFAULT_PERIOD = '2027-Q3'
 const ROUTE_DASH_FRAMES = [[0, 2, 1.5, 0.5], [0.5, 1.5, 2, 0], [1, 1, 1.5, 0.5], [1.5, 0.5, 1, 1.5]]
 const PLAYBACK_INTERVALS = { 1: 5000, 10: 500, 60: 120, 100: 40 } as const
@@ -28,6 +28,8 @@ export default function GisView() {
   const [entities, setEntities] = useState<SimulationEntity[]>([])
   const [realFarms, setRealFarms] = useState<RealWindFarm[]>([])
   const [realTurbines, setRealTurbines] = useState<RealWindTurbine[]>([])
+  const [unifiedFarms, setUnifiedFarms] = useState<UnifiedWindFarm[]>([])
+  const [unifiedTurbines, setUnifiedTurbines] = useState<UnifiedWindTurbine[]>([])
   const [simulationState, setSimulationState] = useState<SimulationState | null>(null)
   const [timeseries, setTimeseries] = useState<SimulationTimeseries | null>(null)
   const [selectedEntity, setSelectedEntity] = useState<SimulationEntity | null>(null)
@@ -52,7 +54,8 @@ export default function GisView() {
   const [question, setQuestion] = useState('分析华北未来三年风电项目需求和产能匹配情况')
   const [busy, setBusy] = useState('')
   const [toast, setToast] = useState('')
-  const [collapsed, setCollapsed] = useState({ left: false, right: false })
+  const [collapsed, setCollapsed] = useState({ left: true, right: true })
+  const unifiedRequestRef = useRef(0)
   const togglePanel = (key: 'left' | 'right') => setCollapsed(current => ({ ...current, [key]: !current[key] }))
 
   useEffect(() => {
@@ -68,6 +71,7 @@ export default function GisView() {
         api.simulationReset('nayong-72h'), api.simulationTimeseries(72),
       ])
       api.realWindFarms().then(value => { if (mounted) setRealFarms(value) }).catch(() => undefined)
+      api.unifiedWindFarms().then(value => { if (mounted) setUnifiedFarms(value) }).catch(() => undefined)
       if (!mounted) return
       setOverview(overview); setPeriod(initialPeriod); setRegions(rg); setFarms(wf); setAllTurbines(tf); setFactories(fc); setProjects(pr)
       setSubstations(ss); setRoutes(rt); setAlerts(al)
@@ -95,6 +99,32 @@ export default function GisView() {
     setAllTurbines(turbines)
     setBusy('')
   }, [])
+
+  const loadUnifiedViewport = useCallback(async (viewport: MapViewport) => {
+    if (!layers.realWind) return
+    const requestId = ++unifiedRequestRef.current
+    const [west, south, east, north] = viewport.bbox
+    const nearbyUsgsFarms = unifiedFarms.filter(farm => (
+      farm.source === 'usgs' && farm.lat >= south - 0.2 && farm.lat <= north + 0.2 &&
+      farm.lng >= west - 0.2 && farm.lng <= east + 0.2
+    ))
+    const usgsResults = await Promise.all(nearbyUsgsFarms.map(farm =>
+      api.unifiedWindTurbines({ source: 'usgs', farmId: farm.id }).catch(() => []),
+    ))
+    const usgsTurbines = usgsResults.flat()
+    if (viewport.zoom < 9) {
+      if (requestId === unifiedRequestRef.current) setUnifiedTurbines(usgsTurbines)
+      return
+    }
+    try {
+      const result = await api.unifiedWindTurbines({
+        source: 'osm', bbox: `${west},${south},${east},${north}`, zoom: Math.round(viewport.zoom),
+      })
+      if (requestId === unifiedRequestRef.current) setUnifiedTurbines([...usgsTurbines, ...result])
+    } catch {
+      if (requestId === unifiedRequestRef.current) setUnifiedTurbines(usgsTurbines)
+    }
+  }, [layers.realWind, unifiedFarms])
 
   useEffect(() => {
     if (!selectedTurbine) {
@@ -318,11 +348,21 @@ export default function GisView() {
         routes={visibleRoutes} alerts={alerts} activePlan={activePlan} layers={layers} period={period}
         entities={entities} selectedEntityId={selectedEntity?.id}
         realFarms={realFarms} realTurbines={layers.realWind ? realTurbines : []}
+        unifiedFarms={layers.realWind ? unifiedFarms : []}
+        unifiedTurbines={layers.realWind ? unifiedTurbines : []}
+        onViewportChange={loadUnifiedViewport}
         focusRegion={focusRegion} focusFarm={focusFarm}
         onSelectTurbine={setSelectedTurbine} onSelectProject={setSelectedProject}
         onSelectRegion={drillRegion} onSelectFarm={drillFarm}
         onSelectEntity={setSelectedEntity}
       />
+
+      <div className="map-source-legend">
+        <span><i className="wri" />WRI 中国风场</span>
+        <span><i className="osm" />OSM 风机</span>
+        <span><i className="usgs" />USGS 美国</span>
+        <span><i className="sim" />模拟</span>
+      </div>
 
       <div className="level-crumbs">
         <button className={!focusRegion && !focusFarm ? 'active' : ''} onClick={() => breadcrumbTo('country')}>中国</button>
@@ -374,7 +414,7 @@ export default function GisView() {
           <div className="layer-grid">
             {Object.entries(layers).map(([key, value]) => (
               <button key={key} className={value ? 'active' : ''} onClick={() => setLayers(current => ({ ...current, [key]: !value }))}>
-                {{ regions: '行政区', heat: '区域热力', windFarms: '风场', farmBoundary: '风场边界', turbines: '风机', projects: '项目', factories: '工厂', substations: '升压站', routes: '物流', alerts: '告警', entities: '实体', powerFlow: '电力流', realWind: 'USGS 实测风场' }[key]}
+                {{ regions: '行政区', heat: '区域热力', windFarms: '风场', farmBoundary: '风场边界', turbines: '风机', projects: '项目', factories: '工厂', substations: '升压站', routes: '物流', alerts: '告警', entities: '实体', powerFlow: '电力流', realWind: '统一风数据' }[key]}
               </button>
             ))}
           </div>
