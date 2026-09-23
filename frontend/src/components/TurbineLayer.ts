@@ -16,6 +16,7 @@ export class TurbineLayer implements maplibregl.CustomLayerInterface {
   private anchor: maplibregl.MercatorCoordinate
   private meterUnits: number
   private turbines: Turbine[] = []
+  private scaleMultiplier = 1
 
   constructor(center: [number, number]) {
     this.anchor = maplibregl.MercatorCoordinate.fromLngLat({ lng: center[0], lat: center[1] }, 900)
@@ -26,6 +27,12 @@ export class TurbineLayer implements maplibregl.CustomLayerInterface {
     this.turbines = turbines
     if (!this.map) return
     this.buildOrUpdate()
+  }
+
+  /** GIS 页滑条统一控制模型放大倍率（1 = 真实尺寸） */
+  setScaleMultiplier(value: number) {
+    this.scaleMultiplier = Math.max(0.5, Math.min(30, value))
+    if (this.map) this.map.triggerRepaint()
   }
 
   onAdd(map: MLMap, gl: WebGLRenderingContext) {
@@ -100,7 +107,7 @@ export class TurbineLayer implements maplibregl.CustomLayerInterface {
   render(_gl: WebGLRenderingContext, options: maplibregl.CustomRenderMethodInput) {
     if (!this.renderer || !this.map) return
     const zoom = this.map.getZoom()
-    const boost = Math.max(1.2, 16 * Math.pow(2, 6.2 - zoom))
+    const boost = Math.max(1.2, 16 * Math.pow(2, 6.2 - zoom)) * this.scaleMultiplier
     const elapsed = Date.now() * 0.001
     for (const group of this.groups.values()) {
       group.scale.setScalar(boost)

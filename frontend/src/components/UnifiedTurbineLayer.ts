@@ -21,6 +21,13 @@ export class UnifiedTurbineLayer implements maplibregl.CustomLayerInterface {
   private anchor = maplibregl.MercatorCoordinate.fromLngLat({ lng: 105, lat: 38 }, 900)
   private meterUnits = new maplibregl.MercatorCoordinate(0, 0).meterInMercatorCoordinateUnits()
   private turbines: UnifiedWindTurbine[] = []
+  /** 模型放大倍率（用户滑条控制，1 = 真实米尺度，底座位置不变） */
+  userScale = 1
+
+  setUserScale(value: number) {
+    this.userScale = Math.max(0.5, Math.min(30, value))
+    if (this.meshes.length) this.updateInstances()
+  }
 
   onAdd(map: MLMap, gl: WebGLRenderingContext) {
     this.map = map
@@ -54,7 +61,11 @@ export class UnifiedTurbineLayer implements maplibregl.CustomLayerInterface {
     const matrix = new THREE.Matrix4()
     const position = new THREE.Vector3()
     const quaternion = new THREE.Quaternion()
-    const scale = new THREE.Vector3(1, 1, 1)
+    const zoom = this.map?.getZoom() ?? 10
+    // 远距离时模型真实尺寸几乎不可见，做 zoom 补偿；再叠加用户滑条倍率
+    const zoomBoost = Math.max(1, 6 * Math.pow(2, 9.5 - zoom))
+    const total = this.userScale * zoomBoost
+    const scale = new THREE.Vector3(total, total, total)
     const color = new THREE.Color()
     this.meshes.forEach((mesh, meshIndex) => {
       this.turbines.forEach((turbine, index) => {
@@ -78,8 +89,15 @@ export class UnifiedTurbineLayer implements maplibregl.CustomLayerInterface {
     })
   }
 
+  private lastZoom = 0
+
   render(_gl: WebGLRenderingContext, options: maplibregl.CustomRenderMethodInput) {
     if (!this.renderer || !this.map || !this.meshes.length) return
+    const zoom = this.map.getZoom()
+    if (Math.abs(zoom - this.lastZoom) > 0.25) {
+      this.lastZoom = zoom
+      this.updateInstances()
+    }
     const rotationX = new THREE.Matrix4().makeRotationAxis(new THREE.Vector3(1, 0, 0), Math.PI / 2)
     const projection = new THREE.Matrix4().fromArray(options.defaultProjectionData.mainMatrix as unknown as number[])
     const local = new THREE.Matrix4()

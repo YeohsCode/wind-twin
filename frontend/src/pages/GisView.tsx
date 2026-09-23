@@ -55,6 +55,7 @@ export default function GisView() {
   const [busy, setBusy] = useState('')
   const [toast, setToast] = useState('')
   const [collapsed, setCollapsed] = useState({ left: true, right: true })
+  const [turbineScale, setTurbineScale] = useState(1)
   const unifiedRequestRef = useRef(0)
   const togglePanel = (key: 'left' | 'right') => setCollapsed(current => ({ ...current, [key]: !current[key] }))
 
@@ -350,6 +351,7 @@ export default function GisView() {
         realFarms={realFarms} realTurbines={layers.realWind ? realTurbines : []}
         unifiedFarms={layers.realWind ? unifiedFarms : []}
         unifiedTurbines={layers.realWind ? unifiedTurbines : []}
+        turbineScale={turbineScale}
         onViewportChange={loadUnifiedViewport}
         focusRegion={focusRegion} focusFarm={focusFarm}
         onSelectTurbine={setSelectedTurbine} onSelectProject={setSelectedProject}
@@ -401,6 +403,13 @@ export default function GisView() {
         </span>
         <small>{simulationState ? `T+${simulationState.tick_count}h` : '准备'}</small>
         {simError && <b>{simError}</b>}
+        <label className="scale-slider" aria-label="风机模型大小">
+          <span>模型 {turbineScale.toFixed(1)}x</span>
+          <input
+            type="range" min={1} max={30} step={0.5} value={turbineScale}
+            onChange={event => setTurbineScale(Number(event.target.value))}
+          />
+        </label>
       </div>
 
       <aside className={`panel left${collapsed.left ? ' collapsed' : ''}`}>

@@ -14,6 +14,7 @@ type Props = {
   entities?: SimulationEntity[]; selectedEntityId?: string | null
   realFarms?: RealWindFarm[]; realTurbines?: RealWindTurbine[]
   unifiedFarms?: UnifiedWindFarm[]; unifiedTurbines?: UnifiedWindTurbine[]
+  turbineScale?: number
   onViewportChange?: (viewport: MapViewport) => void
   onSelectTurbine: (t: Turbine) => void; onSelectProject: (p: Project) => void
   onSelectRegion: (id: string) => void; onSelectFarm: (id: string) => void
@@ -569,6 +570,13 @@ export default function TwinMap(props: Props) {
       })),
     })
     unifiedTurbineLayerRef.current?.setData(props.unifiedTurbines ?? [])
+    if (props.turbineScale != null && unifiedTurbineLayerRef.current) {
+      unifiedTurbineLayerRef.current.userScale = props.turbineScale
+      ;(unifiedTurbineLayerRef.current as unknown as { setUserScale: (v: number) => void }).setUserScale(props.turbineScale)
+    }
+    if (props.turbineScale != null && turbineLayerRef.current) {
+      turbineLayerRef.current.setScaleMultiplier?.(props.turbineScale)
+    }
     if (map.getLayer('unified-turbines-3d')) {
       const zoom = map.getZoom()
       const metersPerPixel = 40075016.686 * Math.cos(map.getCenter().lat * Math.PI / 180) / 2 ** (zoom + 8)
