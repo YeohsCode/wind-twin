@@ -107,7 +107,7 @@ export class TurbineLayer implements maplibregl.CustomLayerInterface {
   render(_gl: WebGLRenderingContext, options: maplibregl.CustomRenderMethodInput) {
     if (!this.renderer || !this.map) return
     const zoom = this.map.getZoom()
-    const boost = Math.max(1.2, 16 * Math.pow(2, 6.2 - zoom)) * this.scaleMultiplier
+    const boost = this.scaleMultiplier
     const elapsed = Date.now() * 0.001
     for (const group of this.groups.values()) {
       group.scale.setScalar(boost)
